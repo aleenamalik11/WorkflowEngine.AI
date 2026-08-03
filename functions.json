@@ -1,0 +1,420 @@
+[
+  {
+    "name": "FindStudent",
+    "description": "Finds a student using student id or student name.",
+    "inputs": [
+      "studentId"
+    ],
+    "outputs": [
+      "student"
+    ]
+  },
+  {
+    "name": "RegisterStudent",
+    "description": "Registers a new student in the school.",
+    "inputs": [
+      "studentInfo"
+    ],
+    "outputs": [
+      "studentId"
+    ]
+  },
+  {
+    "name": "UpdateStudent",
+    "description": "Updates an existing student's information.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "DeleteStudent",
+    "description": "Deletes a student from the system.",
+    "inputs": [
+      "studentId"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "FindCourse",
+    "description": "Finds a course using its identifier.",
+    "inputs": [
+      "courseId"
+    ],
+    "outputs": [
+      "course"
+    ]
+  },
+  {
+    "name": "CreateCourse",
+    "description": "Creates a new course.",
+    "inputs": [
+      "courseInfo"
+    ],
+    "outputs": [
+      "courseId"
+    ]
+  },
+  {
+    "name": "UpdateCourse",
+    "description": "Updates course information.",
+    "inputs": [
+      "course"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "DeleteCourse",
+    "description": "Deletes a course.",
+    "inputs": [
+      "courseId"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "CheckPrerequisites",
+    "description": "Checks whether a student satisfies all prerequisites for a course.",
+    "inputs": [
+      "student",
+      "course"
+    ],
+    "outputs": [
+      "eligible"
+    ]
+  },
+  {
+    "name": "EnrollStudent",
+    "description": "Enrolls a student into a course.",
+    "inputs": [
+      "student",
+      "course"
+    ],
+    "outputs": [
+      "enrollment"
+    ]
+  },
+  {
+    "name": "DropCourse",
+    "description": "Drops a student's enrollment from a course.",
+    "inputs": [
+      "student",
+      "course"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "AssignTeacher",
+    "description": "Assigns a teacher to a course.",
+    "inputs": [
+      "teacher",
+      "course"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "FindTeacher",
+    "description": "Finds a teacher.",
+    "inputs": [
+      "teacherId"
+    ],
+    "outputs": [
+      "teacher"
+    ]
+  },
+  {
+    "name": "RegisterTeacher",
+    "description": "Registers a new teacher.",
+    "inputs": [
+      "teacherInfo"
+    ],
+    "outputs": [
+      "teacherId"
+    ]
+  },
+  {
+    "name": "ScheduleClass",
+    "description": "Schedules a class for a course.",
+    "inputs": [
+      "course",
+      "teacher"
+    ],
+    "outputs": [
+      "schedule"
+    ]
+  },
+  {
+    "name": "RecordAttendance",
+    "description": "Records attendance for a student.",
+    "inputs": [
+      "student",
+      "course",
+      "date"
+    ],
+    "outputs": [
+      "attendance"
+    ]
+  },
+  {
+    "name": "CalculateAttendance",
+    "description": "Calculates attendance percentage.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "attendancePercentage"
+    ]
+  },
+  {
+    "name": "CreateExam",
+    "description": "Creates an examination.",
+    "inputs": [
+      "course"
+    ],
+    "outputs": [
+      "exam"
+    ]
+  },
+  {
+    "name": "ScheduleExam",
+    "description": "Schedules an examination.",
+    "inputs": [
+      "exam"
+    ],
+    "outputs": [
+      "schedule"
+    ]
+  },
+  {
+    "name": "RecordMarks",
+    "description": "Stores marks obtained by a student.",
+    "inputs": [
+      "student",
+      "exam",
+      "marks"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "CalculateGPA",
+    "description": "Calculates GPA of a student.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "gpa"
+    ]
+  },
+  {
+    "name": "GenerateTranscript",
+    "description": "Generates transcript for a student.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "transcript"
+    ]
+  },
+  {
+    "name": "GenerateReportCard",
+    "description": "Generates report card.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "reportCard"
+    ]
+  },
+  {
+    "name": "CollectFees",
+    "description": "Collects tuition fees from a student.",
+    "inputs": [
+      "student",
+      "amount"
+    ],
+    "outputs": [
+      "receipt"
+    ]
+  },
+  {
+    "name": "CheckFeeStatus",
+    "description": "Checks whether fees are pending.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "feeStatus"
+    ]
+  },
+  {
+    "name": "GenerateFeeInvoice",
+    "description": "Generates fee invoice.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "invoice"
+    ]
+  },
+  {
+    "name": "IssueLibraryBook",
+    "description": "Issues a library book.",
+    "inputs": [
+      "student",
+      "book"
+    ],
+    "outputs": [
+      "issueRecord"
+    ]
+  },
+  {
+    "name": "ReturnLibraryBook",
+    "description": "Returns a library book.",
+    "inputs": [
+      "issueRecord"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "ReserveLibraryBook",
+    "description": "Reserves a library book.",
+    "inputs": [
+      "student",
+      "book"
+    ],
+    "outputs": [
+      "reservation"
+    ]
+  },
+  {
+    "name": "SendEmail",
+    "description": "Sends an email notification.",
+    "inputs": [
+      "recipient",
+      "subject",
+      "body"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "SendSMS",
+    "description": "Sends an SMS notification.",
+    "inputs": [
+      "recipient",
+      "message"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "NotifyStudent",
+    "description": "Notifies a student about an event.",
+    "inputs": [
+      "student",
+      "message"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "NotifyTeacher",
+    "description": "Notifies a teacher.",
+    "inputs": [
+      "teacher",
+      "message"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "ValidateEnrollment",
+    "description": "Validates whether enrollment is allowed.",
+    "inputs": [
+      "student",
+      "course"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "ValidateStudent",
+    "description": "Validates student information.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "ValidateCourse",
+    "description": "Validates course information.",
+    "inputs": [
+      "course"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "ArchiveStudent",
+    "description": "Archives graduated or inactive students.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "GraduateStudent",
+    "description": "Graduates a student after completing all requirements.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "degree"
+    ]
+  },
+  {
+    "name": "GenerateCertificate",
+    "description": "Generates a completion certificate.",
+    "inputs": [
+      "student"
+    ],
+    "outputs": [
+      "certificate"
+    ]
+  },
+  {
+    "name": "AuditLog",
+    "description": "Stores an audit log entry for an executed operation.",
+    "inputs": [
+      "action"
+    ],
+    "outputs": [
+      "success"
+    ]
+  }
+]
