@@ -1,164 +1,136 @@
+import os
 import json
 import pickle
-import uuid
-from typing import List
 
-import networkx as nx
 import numpy as np
+import pandas as pd
+import networkx as nx
 
 from sentence_transformers import SentenceTransformer
 
-from models import GraphNode, GraphEdge
 
-
-##############################################################
-# JSON
-##############################################################
-
-def load_json(path: str):
-
-    with open(path, "r", encoding="utf8") as f:
-        return json.load(f)
-
-
-def save_json(data, path: str):
-
-    with open(path, "w", encoding="utf8") as f:
-        json.dump(
-            data,
-            f,
-            indent=4,
-            ensure_ascii=False
-        )
-
-
-##############################################################
-# Pickle
-##############################################################
-
-def save_pickle(obj, path):
-
-    with open(path, "wb") as f:
-        pickle.dump(obj, f)
-
-
-def load_pickle(path):
-
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-##############################################################
-# Embeddings
-##############################################################
+###############################################################
+# Embedding Service
+###############################################################
 
 class EmbeddingService:
 
-    def __init__(
-            self,
-            model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
 
         self.model = SentenceTransformer(model_name)
 
+
     def encode(self, text):
+
+        if not text:
+            text = ""
 
         return self.model.encode(
             text,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )
-
-    def encode_batch(self, texts):
-
-        return self.model.encode(
-            texts,
-            convert_to_numpy=True,
             normalize_embeddings=True
         )
 
 
-##############################################################
+
+###############################################################
 # Similarity
-##############################################################
+###############################################################
 
 def cosine_similarity(a, b):
 
     a = np.array(a)
-
     b = np.array(b)
 
-    return np.dot(a, b)
-
-
-##############################################################
-# Workflow JSON
-##############################################################
-
-def workflow_to_text(workflow_json):
-
-    if isinstance(workflow_json, str):
-        workflow = json.loads(workflow_json)
-    else:
-        workflow = workflow_json
-
-    lines = []
-
-    lines.append(
-        f"Workflow {workflow['Name']}"
+    return np.dot(a, b) / (
+        np.linalg.norm(a) *
+        np.linalg.norm(b)
     )
 
-    lines.append("Nodes")
-
-    for node in workflow["Nodes"]:
-
-        if isinstance(node, dict):
-            lines.append(node["Name"])
-        else:
-            lines.append(str(node))
-
-    lines.append("Connections")
-
-    for source, transitions in workflow["Connections"].items():
-
-        for key, destination in transitions.items():
-
-            lines.append(
-                f"{source} --{key}--> {destination}"
-            )
-
-    return "\n".join(lines)
 
 
-##############################################################
-# Graph
-##############################################################
+###############################################################
+# Function text conversion
+###############################################################
+
+def functions_to_text(function):
+
+    text = function.name
+
+    text += "\n"
+
+    text += function.description
+
+
+    if function.inputs:
+
+        text += "\nInputs: "
+
+        text += ", ".join(
+            function.inputs
+        )
+
+
+    if function.outputs:
+
+        text += "\nOutputs: "
+
+        text += ", ".join(
+            function.outputs
+        )
+
+
+    return text
+
+
+
+###############################################################
+# Dataset Loading
+###############################################################
+
+def load_dataset(path):
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+
+
+    if path.endswith(".xlsx"):
+
+        return pd.read_excel(path)
+
+
+    if path.endswith(".csv"):
+
+        return pd.read_csv(path)
+
+
+    raise Exception(
+        "Unsupported dataset format"
+    )
+
+
+
+###############################################################
+# Graph Creation
+###############################################################
 
 def create_graph():
 
-    return nx.MultiDiGraph()
+    return nx.DiGraph()
 
 
-def add_node(
-        graph,
-        node: GraphNode):
+
+def add_node(graph, node):
 
     graph.add_node(
-
         node.id,
-
         name=node.name,
-
-        node_type=node.node_type,
-
-        embedding=node.embedding,
-
+        type=node.node_type,
         metadata=node.metadata
     )
 
 
-def add_edge(
-        graph,
-        edge: GraphEdge):
+
+def add_edge(graph, edge):
 
     graph.add_edge(
 
@@ -168,136 +140,124 @@ def add_edge(
 
         relation=edge.relation,
 
-        weight=edge.weight
+        metadata=edge.metadata
+
     )
 
 
-##############################################################
+
+###############################################################
 # Graph Serialization
-##############################################################
+###############################################################
 
-def save_graph(
-        graph,
-        path):
+def save_graph(graph, path):
 
-    nx.write_gpickle(
-        graph,
-        path
-    )
+    directory = os.path.dirname(path)
 
-
-def load_graph(
-        path):
-
-    return nx.read_gpickle(path)
+    if directory:
+        os.makedirs(
+            directory,
+            exist_ok=True
+        )
 
 
-##############################################################
-# UUID
-##############################################################
+    with open(path, "wb") as f:
+
+        pickle.dump(
+            graph,
+            f
+        )
+
+
+
+def load_graph(path):
+
+    with open(path, "rb") as f:
+
+        return pickle.load(f)
+
+
+
+###############################################################
+# Metadata Serialization
+###############################################################
+
+def save_metadata(data, path):
+
+    directory = os.path.dirname(path)
+
+    if directory:
+        os.makedirs(
+            directory,
+            exist_ok=True
+        )
+
+
+    with open(path, "wb") as f:
+
+        pickle.dump(
+            data,
+            f
+        )
+
+
+
+def load_metadata(path):
+
+    with open(path, "rb") as f:
+
+        return pickle.load(f)
+
+
+
+###############################################################
+# FAISS helpers
+###############################################################
+
+def save_json(data, path):
+
+    directory = os.path.dirname(path)
+
+    if directory:
+        os.makedirs(
+            directory,
+            exist_ok=True
+        )
+
+
+    with open(
+        path,
+        "w",
+        encoding="utf8"
+    ) as f:
+
+        json.dump(
+            data,
+            f,
+            indent=4
+        )
+
+def default_path_info():
+    return {"frequency": 0, "embedding": None}
+
+def load_json(path):
+
+    with open(
+        path,
+        "r",
+        encoding="utf8"
+    ) as f:
+
+        return json.load(f)
+
+
+
+###############################################################
+# ID Generator
+###############################################################
 
 def new_id():
 
+    import uuid
+
     return str(uuid.uuid4())
-
-
-##############################################################
-# Pretty Printing
-##############################################################
-
-def print_graph(graph):
-
-    print()
-
-    print("=" * 70)
-
-    print("Nodes")
-
-    print("=" * 70)
-
-    for node in graph.nodes(data=True):
-
-        print(node)
-
-    print()
-
-    print("=" * 70)
-
-    print("Edges")
-
-    print("=" * 70)
-
-    for edge in graph.edges(data=True):
-
-        print(edge)
-
-
-##############################################################
-# Graph Search Helpers
-##############################################################
-
-def find_node_by_name(
-        graph,
-        name):
-
-    name = name.lower()
-
-    for node_id, data in graph.nodes(data=True):
-
-        if data["name"].lower() == name:
-            return node_id
-
-    return None
-
-
-def neighbors(
-        graph,
-        node_id):
-
-    return list(
-        graph.successors(node_id)
-    )
-
-
-##############################################################
-# Dataset
-##############################################################
-
-def load_dataset(path):
-
-    import pandas as pd
-
-    df = pd.read_excel(path)
-
-    df["WorkflowText"] = df["WorkflowJson"].apply(
-        workflow_to_text
-    )
-
-    return df
-
-
-##############################################################
-# Registered Functions
-##############################################################
-
-def functions_to_text(function):
-
-    text = []
-
-    text.append(function.name)
-
-    text.append(function.description)
-
-    if function.inputs:
-
-        text.append("Inputs")
-
-        text.extend(function.inputs)
-
-    if function.outputs:
-
-        text.append("Outputs")
-
-        text.extend(function.outputs)
-
-    return "\n".join(text)

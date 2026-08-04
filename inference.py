@@ -1,160 +1,202 @@
 import json
 
-from graph_search import GraphSearch
+from prompt_builder_graph import PromptGraphBuilder
+from graph_matcher import GraphMatcher
+from candidate_retriever import CandidateRetriever
+from graph_planner import GraphPlanner
+from workflow_generator import WorkflowGenerator
+
 from function_matcher import FunctionMatcher
-from planner import WorkflowPlanner
+from utils import (
+    load_graph,
+    EmbeddingService
+)
+from workflow_prompt_parser import WorkflowPromptParser
 
 ###############################################################
-# CONFIGURATION
+# CONFIG
 ###############################################################
 
-MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL =  "sentence-transformers/all-MiniLM-L6-v2"
 
-GRAPH_PATH = "models/workflow_graph.gpickle"
+DOMAIN_GRAPH = "models/domain_graph.pkl"
 
-FAISS_INDEX = "models/workflow.index"
-
-METADATA = "models/workflow_metadata.pkl"
-
-REGISTERED_FUNCTIONS = "functions.json"
-
-OUTPUT = "generated_workflow.json"
+FUNCTIONS = "functions.json"
 
 ###############################################################
 # LOAD COMPONENTS
 ###############################################################
 
-print("=" * 60)
-print("Loading AI Components")
-print("=" * 60)
+print("=" * 70)
+print("Loading AI Engine")
+print("=" * 70)
 
-graph_search = GraphSearch(
-    MODEL_PATH,
-    GRAPH_PATH,
-    FAISS_INDEX,
-    METADATA
-)
+###############################################################
+# Parser
+###############################################################
 
-matcher = FunctionMatcher(MODEL_PATH)
+parser = WorkflowPromptParser()
 
-matcher.load(REGISTERED_FUNCTIONS)
+###############################################################
+# Prompt Graph Builder
+###############################################################
 
-planner = WorkflowPlanner(
-    graph_search,
-    matcher
+prompt_graph_builder = PromptGraphBuilder(
+    EMBEDDING_MODEL
 )
 
 ###############################################################
-# INFERENCE LOOP
+# Embeddings
 ###############################################################
 
-while True:
+embedding_service = EmbeddingService(
+    EMBEDDING_MODEL
+)
 
-    print()
+###############################################################
+# Domain Graph
+###############################################################
 
-    prompt = input("Admin Prompt (exit to quit): ")
+domain_graph = load_graph(
+    DOMAIN_GRAPH
+)
 
-    if prompt.lower() == "exit":
-        break
+###############################################################
+# Matcher
+###############################################################
 
-    print()
+graph_matcher = GraphMatcher(
+    embedding_service,
+    domain_graph
+)
 
-    print("Generating workflow...")
+###############################################################
+# Candidate Retriever
+###############################################################
 
-    workflow = planner.plan(prompt)
+candidate_retriever = CandidateRetriever(
+    domain_graph
+)
 
-    print()
+###############################################################
+# Planner
+###############################################################
 
-    print("=" * 60)
-    print("Workflow")
-    print("=" * 60)
+planner = GraphPlanner()
 
-    print()
+###############################################################
+# Function Matcher
+###############################################################
 
-    print("Name:", workflow.name)
+function_matcher = FunctionMatcher(
+    EMBEDDING_MODEL
+)
 
-    print()
+function_matcher.load(
+    FUNCTIONS
+)
 
-    print("Nodes")
+###############################################################
+# Workflow Generator
+###############################################################
 
-    for node in workflow.nodes:
+generator = WorkflowGenerator(
+    function_matcher
+)
 
-        print(
-            node.id,
-            node.function_name
-        )
+###############################################################
+# PROMPT
+###############################################################
 
-    print()
+prompt = input("\nEnter workflow prompt:\n> ")
 
-    print("Connections")
+###############################################################
+# STEP 1
+###############################################################
 
-    for edge in workflow.edges:
+print("\n[1] Parsing Prompt...")
 
-        print(
-            edge.source,
-            "--",
-            edge.transition,
-            "-->",
-            edge.target
-        )
+analysis = parser.parse(
+    prompt
+)
 
-    ###########################################################
-    # Save
-    ###########################################################
+###############################################################
+# STEP 2
+###############################################################
 
-    output = {
+print("[2] Building Prompt Graph...")
 
-        "name": workflow.name,
+prompt_graph = prompt_graph_builder.build(
+    analysis
+)
 
-        "inputs": workflow.inputs,
+###############################################################
+# STEP 3
+###############################################################
 
-        "nodes": [
+print("[3] Matching Concepts...")
 
-            {
+matched_graph = graph_matcher.match(
+    prompt_graph
+)
 
-                "id": n.id,
+###############################################################
+# STEP 4
+###############################################################
 
-                "function": n.function_name,
+print("[4] Retrieving Candidates...")
 
-                "type": n.node_type
+candidate_graph = candidate_retriever.retrieve(
+    matched_graph
+)
 
-            }
+###############################################################
+# STEP 5
+###############################################################
 
-            for n in workflow.nodes
+print("[5] Ranking Missing Concepts...")
 
-        ],
+ranked_candidates = candidate_retriever.rank_missing_nodes(
+    matched_graph,
+    candidate_graph
+)
 
-        "connections": [
+###############################################################
+# STEP 6
+###############################################################
 
-            {
+print("[6] Planning Workflow...")
 
-                "source": e.source,
+plan = planner.plan(
+    matched_graph,
+    candidate_graph,
+    ranked_candidates
+)
 
-                "target": e.target,
+###############################################################
+# STEP 7
+###############################################################
 
-                "transition": e.transition
+print("[7] Generating Workflow JSON...")
 
-            }
+workflow = generator.generate(
+    plan,
+    workflow_name="Generated Workflow"
+)
 
-            for e in workflow.edges
+###############################################################
+# OUTPUT
+###############################################################
 
-        ]
+print()
 
-    }
+print("=" * 70)
+print("Generated Workflow")
+print("=" * 70)
 
-    with open(
-            OUTPUT,
-            "w",
-            encoding="utf8") as f:
+print()
 
-        json.dump(
-            output,
-            f,
-            indent=4
-        )
-
-    print()
-
-    print("Saved to generated_workflow.json")
-
-    print()
+print(json.dumps(
+    workflow,
+    indent=4
+))

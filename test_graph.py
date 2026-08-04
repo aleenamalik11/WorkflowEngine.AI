@@ -1,14 +1,5 @@
-from graph_search import GraphSearch
+prompt = "Register a new student and assign him to a class"
 
-search = GraphSearch(
-    "sentence-transformers/all-MiniLM-L6-v2",
-    "models/workflow_graph.gpickle",
-    "models/workflow.index",
-    "models/workflow_metadata.pkl"
-)
+prompt_graph = parser.parse(prompt)
 
-results = search.search_workflows(
-    "Enroll Ahmed in Data Structures"
-)
-
-print(results)
+prompt_graph.print()
