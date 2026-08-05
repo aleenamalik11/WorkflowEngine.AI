@@ -17,7 +17,10 @@ class CandidateRetriever:
             return list(self.domain_graph.successors(node))
         elif isinstance(self.domain_graph, dict):
             adjacency = self.domain_graph.get("adjacency", {})
-            return adjacency.get(node, [])
+            return [
+                item.get("target", item) if isinstance(item, dict) else item
+                for item in adjacency.get(node, [])
+            ]
         return []
 
     def _get_predecessors(self, node):
@@ -26,7 +29,10 @@ class CandidateRetriever:
             return list(self.domain_graph.predecessors(node))
         elif isinstance(self.domain_graph, dict):
             reverse_adjacency = self.domain_graph.get("reverse_adjacency", {})
-            return reverse_adjacency.get(node, [])
+            return [
+                item.get("source", item) if isinstance(item, dict) else item
+                for item in reverse_adjacency.get(node, [])
+            ]
         return []
 
     def _get_node_data(self, node):
@@ -76,9 +82,10 @@ class CandidateRetriever:
             if not edges:
                 adjacency = self.domain_graph.get("adjacency", {})
                 for u in nodes_set:
-                    for v in adjacency.get(u, []):
+                    for item in adjacency.get(u, []):
+                        v = item.get("target", item) if isinstance(item, dict) else item
                         if v in nodes_set:
-                            edges.append((u, v, {}))
+                            edges.append((u, v, item if isinstance(item, dict) else {}))
 
         return edges
 

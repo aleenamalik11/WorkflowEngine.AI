@@ -101,26 +101,6 @@ class GraphPlanner:
             )
 
         ###########################################################
-        # Remove isolated nodes
-        ###########################################################
-
-        isolated = list(
-
-            nx.isolates(
-
-                workflow_graph
-
-            )
-
-        )
-
-        workflow_graph.remove_nodes_from(
-
-            isolated
-
-        )
-
-        ###########################################################
         # Topological Sort
         ###########################################################
 
@@ -136,7 +116,7 @@ class GraphPlanner:
 
             )
 
-        except:
+        except nx.NetworkXUnfeasible:
 
             execution_order = list(
 

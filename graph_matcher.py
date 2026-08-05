@@ -1,5 +1,4 @@
 import networkx as nx
-
 from utils import cosine_similarity
 
 
@@ -7,10 +6,17 @@ class GraphMatcher:
 
     def __init__(self,
                  embedding_service,
-                 domain_graph):
+                 domain_graph,
+                 rebel_model_name=None,
+                 device=None):
 
         self.embedding_service = embedding_service
         self.domain_graph = domain_graph
+
+        self.rebel_model_name = rebel_model_name
+        self.device = device
+        self.tokenizer = None
+        self.rebel_model = None
 
     ###############################################################
     # Helper to iterate nodes regardless of graph storage format
@@ -33,26 +39,133 @@ class GraphMatcher:
         raise TypeError("domain_graph must be a NetworkX Graph or a dict containing a 'nodes' key.")
 
     ###############################################################
-    # Extract concepts from Prompt Graph
+    # REBEL Triplet Extraction Helper (Fixed Parser)
+    ###############################################################
+
+    def _extract_rebel_triplets(self, text):
+        """
+        Runs REBEL to parse raw text into (subject, relation, object) triplets safely.
+        """
+        if not text or not text.strip():
+            return []
+
+        self._load_rebel()
+        if self.tokenizer is None or self.rebel_model is None:
+            return []
+
+        inputs = self.tokenizer(
+            text,
+            return_tensors="pt",
+            max_length=256,
+            truncation=True
+        ).to(self.device)
+
+        gen_kwargs = {
+            "max_length": 128,
+            "length_penalty": 0,
+            "num_beams": 2,
+            "num_return_sequences": 1,
+        }
+
+        import torch
+
+        with torch.no_grad():
+            generated_tokens = self.rebel_model.generate(
+                **inputs,
+                **gen_kwargs
+            )
+
+        decoded_text = self.tokenizer.batch_decode(
+            generated_tokens,
+            skip_special_tokens=False
+        )[0]
+
+        triplets = []
+        current = 'text'
+        subject, relation, object_ = '', '', ''
+
+        tokens = decoded_text.replace("<s>", "").replace("</s>", "").replace("<pad>", "").split()
+        for token in tokens:
+            if token == "<triplet>":
+                if subject.strip() and relation.strip() and object_.strip():
+                    triplets.append((subject.strip(), relation.strip(), object_.strip()))
+                subject, relation, object_ = '', '', ''
+                current = 't'
+            elif token == "<subj>":
+                current = 's'
+            elif token == "<obj>":
+                current = 'o'
+            else:
+                if current == 't':
+                    subject += ' ' + token
+                elif current == 's':
+                    object_ += ' ' + token
+                elif current == 'o':
+                    relation += ' ' + token
+
+        if subject.strip() and relation.strip() and object_.strip():
+            triplets.append((subject.strip(), relation.strip(), object_.strip()))
+
+        return triplets
+
+    def _load_rebel(self):
+        """Load REBEL only when relation extraction was explicitly enabled."""
+        if self.tokenizer is not None or not self.rebel_model_name:
+            return
+
+        import os
+        import torch
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        self.device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.rebel_model_name)
+        self.rebel_model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.rebel_model_name
+        ).to(self.device)
+        self.rebel_model.eval()
+
+    ###############################################################
+    # Extract concepts from Prompt Graph via REBEL
     ###############################################################
 
     def _extract_concepts(self, prompt_graph):
+        """
+        Extracts actionable concepts from prompt graph nodes using REBEL
+        triplets and graph edge relationships.
+        """
         concepts = []
 
         for node_id, node in prompt_graph.nodes(data=True):
-            node_type = node.get("type", "")
-            if node_type and node_type != "Action":
-                continue
-
-            # Extract target entities connected via "acts_on"
-            entities = []
-            for _, target, edge in prompt_graph.out_edges(node_id, data=True):
-                if edge.get("relation") == "acts_on":
-                    entity = prompt_graph.nodes[target]
-                    entities.append(entity.get("name", str(target)))
-
             node_name = node.get("name", str(node_id))
-            concept_text = f"{node_name} {' '.join(entities)}" if entities else node_name
+            node_description = node.get("description", node_name)
+
+            # 1. Gather connected target entities from prompt graph edges
+            graph_entities = []
+            for _, target, edge in prompt_graph.out_edges(node_id, data=True):
+                entity = prompt_graph.nodes[target]
+                graph_entities.append(entity.get("name", str(target)))
+
+            # 2. Extract relationships via REBEL on node text
+            rebel_triplets = (
+                self._extract_rebel_triplets(node_description)
+                if self.rebel_model_name else []
+            )
+
+            rebel_entities = []
+            for subj, rel, obj in rebel_triplets:
+                if obj.lower() not in [e.lower() for e in rebel_entities]:
+                    rebel_entities.append(obj)
+                if subj.lower() != node_name.lower() and subj.lower() not in [e.lower() for e in rebel_entities]:
+                    rebel_entities.append(subj)
+
+            # Combine graph targets + REBEL extracted entities cleanly
+            all_entities = list(dict.fromkeys(graph_entities + rebel_entities))
+
+            if all_entities:
+                concept_text = f"{node_name} {' '.join(all_entities)}"
+            else:
+                concept_text = node_name
 
             concepts.append({
                 "node_id": node_id,
@@ -69,8 +182,8 @@ class GraphMatcher:
         concepts = self._extract_concepts(prompt_graph)
         matched_graph = nx.DiGraph()
 
-        # Direct mapping: prompt_node_id -> matched domain_node_id
         prompt_to_domain_map = {}
+        domain_nodes = list(self._get_domain_nodes())
 
         for concept in concepts:
             # 1. Embed user concept
@@ -80,7 +193,7 @@ class GraphMatcher:
             best_node = None
 
             # 2. Compare against domain embeddings via Cosine Similarity
-            for node_id, node in self._get_domain_nodes():
+            for node_id, node in domain_nodes:
                 embedding = node.get("embedding")
                 if embedding is None:
                     continue
@@ -95,7 +208,9 @@ class GraphMatcher:
             if best_node is None or best_score < threshold:
                 continue
 
-            domain_id = best_node.get("id", best_node.get("name"))
+            # Persisted graph edges are keyed by node_id, rather than by the
+            # generated ``id`` stored in node metadata.
+            domain_id = node_id
             prompt_to_domain_map[concept["node_id"]] = domain_id
 
             matched_graph.add_node(

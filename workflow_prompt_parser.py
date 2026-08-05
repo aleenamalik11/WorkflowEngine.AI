@@ -217,7 +217,7 @@ class WorkflowPromptParser:
 
 if __name__ == "__main__":
 
-    parser = PromptParser()
+    parser = WorkflowPromptParser()
 
     prompt = """
     Register a new student after validating documents

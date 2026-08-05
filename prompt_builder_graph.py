@@ -1,23 +1,18 @@
 import uuid
 import networkx as nx
 
-from sentence_transformers import SentenceTransformer
-
 from workflow_prompt_parser import (
     PromptAnalysis,
     PromptAction,
     PromptEntity
 )
+from utils import EmbeddingService
 
 
 class PromptGraphBuilder:
 
-    def __init__(self,
-                 embedding_model="sentence-transformers/all-MiniLM-L6-v2"):
-
-        self.embedding_model = SentenceTransformer(
-            embedding_model
-        )
+    def __init__(self, embedding_service=None):
+        self.embedding_service = embedding_service or EmbeddingService()
 
     ###############################################################
     # Build Prompt Graph
@@ -38,10 +33,7 @@ class PromptGraphBuilder:
 
             node_id = str(uuid.uuid4())
 
-            embedding = self.embedding_model.encode(
-                action.lemma,
-                normalize_embeddings=True
-            )
+            embedding = self.embedding_service.encode(action.lemma)
 
             graph.add_node(
 
@@ -53,13 +45,15 @@ class PromptGraphBuilder:
 
                 original_text=action.text,
 
+                description=action.text,
+
                 type="Action",
 
                 embedding=embedding
 
             )
 
-            action_lookup[action.lemma] = node_id
+            action_lookup[action.token_index] = node_id
 
         ###########################################################
         # Create Entity Nodes
@@ -71,10 +65,7 @@ class PromptGraphBuilder:
 
             node_id = str(uuid.uuid4())
 
-            embedding = self.embedding_model.encode(
-                entity.root,
-                normalize_embeddings=True
-            )
+            embedding = self.embedding_service.encode(entity.root)
 
             graph.add_node(
 
@@ -86,13 +77,15 @@ class PromptGraphBuilder:
 
                 original_text=entity.text,
 
+                description=entity.text,
+
                 type="Entity",
 
                 embedding=embedding
 
             )
 
-            entity_lookup[entity.root] = node_id
+            entity_lookup[entity.token_index] = node_id
 
         ###########################################################
         # Attach Entity to Closest Action
@@ -121,17 +114,17 @@ class PromptGraphBuilder:
             if nearest_action is None:
                 continue
 
-            if nearest_action.lemma not in action_lookup:
+            if nearest_action.token_index not in action_lookup:
                 continue
 
-            if entity.root not in entity_lookup:
+            if entity.token_index not in entity_lookup:
                 continue
 
             graph.add_edge(
 
-                action_lookup[nearest_action.lemma],
+                action_lookup[nearest_action.token_index],
 
-                entity_lookup[entity.root],
+                entity_lookup[entity.token_index],
 
                 relation="acts_on"
 
@@ -142,22 +135,18 @@ class PromptGraphBuilder:
         ###########################################################
 
         for relation in analysis.relations:
-
-            if relation.source not in action_lookup:
-                continue
-
-            if relation.target not in action_lookup:
-                continue
-
-            graph.add_edge(
-
-                action_lookup[relation.source],
-
-                action_lookup[relation.target],
-
-                relation=relation.relation
-
+            source_id = next(
+                (action_lookup[action.token_index] for action in analysis.actions
+                 if action.lemma == relation.source),
+                None,
             )
+            target_id = next(
+                (action_lookup[action.token_index] for action in analysis.actions
+                 if action.lemma == relation.target),
+                None,
+            )
+            if source_id and target_id and source_id != target_id:
+                graph.add_edge(source_id, target_id, relation=relation.relation)
 
         return graph
 

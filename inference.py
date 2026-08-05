@@ -38,20 +38,18 @@ print("=" * 70)
 parser = WorkflowPromptParser()
 
 ###############################################################
-# Prompt Graph Builder
-###############################################################
-
-prompt_graph_builder = PromptGraphBuilder(
-    EMBEDDING_MODEL
-)
-
-###############################################################
 # Embeddings
 ###############################################################
 
 embedding_service = EmbeddingService(
     EMBEDDING_MODEL
 )
+
+###############################################################
+# Prompt Graph Builder
+###############################################################
+
+prompt_graph_builder = PromptGraphBuilder(embedding_service)
 
 ###############################################################
 # Domain Graph
