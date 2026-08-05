@@ -74,12 +74,15 @@ class WorkflowGenerator:
                 node_data = {}
 
             node_name = node_data.get("name", str(node_id))
+            match_text = node_data.get("prompt_text", node_name)
 
             #######################################################
             # Match domain concept to registered function
             #######################################################
 
-            matches = self.function_matcher.top_matches(node_name, k=1)
+            # Match the function from the user's original concept when it is
+            # available; the domain-node label can be a related workflow step.
+            matches = self.function_matcher.top_matches(match_text, k=1)
 
             function_obj = None
             if matches:

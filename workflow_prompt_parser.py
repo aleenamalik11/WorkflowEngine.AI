@@ -64,7 +64,16 @@ class WorkflowPromptParser:
 
         for token in doc:
 
-            if token.pos_ == "VERB":
+            # spaCy can tag the verb in "after that notify teacher" as a
+            # noun. Treat that narrow coordination pattern as an action.
+            follows_after_that = (
+                token.pos_ == "NOUN"
+                and token.i >= 2
+                and doc[token.i - 1].lower_ == "that"
+                and doc[token.i - 2].lower_ in {"after", "before"}
+            )
+
+            if token.pos_ == "VERB" or follows_after_that:
 
                 analysis.actions.append(
 
@@ -127,7 +136,7 @@ class WorkflowPromptParser:
 
                         break
 
-                if left and right:
+                if left and right and left != right:
 
                     analysis.relations.append(
 
@@ -166,7 +175,7 @@ class WorkflowPromptParser:
 
                         break
 
-                if left and right:
+                if left and right and left != right:
 
                     analysis.relations.append(
 
@@ -194,19 +203,17 @@ class WorkflowPromptParser:
 
         for i in range(len(verbs) - 1):
 
-            analysis.relations.append(
+            relation = PromptRelation(
 
-                PromptRelation(
+                source=verbs[i],
 
-                    source=verbs[i],
+                target=verbs[i + 1],
 
-                    target=verbs[i + 1],
-
-                    relation="sequence"
-
-                )
+                relation="sequence"
 
             )
+            if relation not in analysis.relations:
+                analysis.relations.append(relation)
 
         return analysis
 

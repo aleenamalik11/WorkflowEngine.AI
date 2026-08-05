@@ -137,12 +137,19 @@ class GraphMatcher:
         concepts = []
 
         for node_id, node in prompt_graph.nodes(data=True):
+            # Workflow steps come from action nodes. Entity nodes provide
+            # context through ``acts_on`` edges and must not become steps.
+            if node.get("type") and node["type"] != "Action":
+                continue
+
             node_name = node.get("name", str(node_id))
             node_description = node.get("description", node_name)
 
             # 1. Gather connected target entities from prompt graph edges
             graph_entities = []
             for _, target, edge in prompt_graph.out_edges(node_id, data=True):
+                if edge.get("relation") != "acts_on":
+                    continue
                 entity = prompt_graph.nodes[target]
                 graph_entities.append(entity.get("name", str(target)))
 
@@ -191,6 +198,7 @@ class GraphMatcher:
 
             best_score = -1.0
             best_node = None
+            best_node_id = None
 
             # 2. Compare against domain embeddings via Cosine Similarity
             for node_id, node in domain_nodes:
@@ -203,14 +211,15 @@ class GraphMatcher:
                 if score > best_score:
                     best_score = score
                     best_node = node
+                    best_node_id = node_id
 
             # 3. Filter by similarity threshold
             if best_node is None or best_score < threshold:
                 continue
 
-            # Persisted graph edges are keyed by node_id, rather than by the
-            # generated ``id`` stored in node metadata.
-            domain_id = node_id
+            # Persisted graph edges are keyed by the domain node key, rather
+            # than by the generated ``id`` stored in node metadata.
+            domain_id = best_node_id
             prompt_to_domain_map[concept["node_id"]] = domain_id
 
             matched_graph.add_node(
