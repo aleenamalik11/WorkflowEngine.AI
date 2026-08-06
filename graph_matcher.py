@@ -38,6 +38,56 @@ class GraphMatcher:
 
         raise TypeError("domain_graph must be a NetworkX Graph or a dict containing a 'nodes' key.")
 
+    def _as_domain_digraph(self):
+        """Return the persisted domain graph in a form suitable for path queries."""
+        if isinstance(self.domain_graph, nx.Graph):
+            if self.domain_graph.is_directed():
+                return self.domain_graph
+            return nx.DiGraph(self.domain_graph)
+
+        graph = nx.DiGraph()
+
+        for node_id, node_data in self._get_domain_nodes():
+            graph.add_node(node_id, **node_data)
+
+        if not isinstance(self.domain_graph, dict):
+            return graph
+
+        # Training persists edges as dictionaries.  The adjacency fallback
+        # also supports graphs produced by older training runs.
+        edges = self.domain_graph.get("edges", [])
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            source = edge.get("source")
+            target = edge.get("target")
+            if source is not None and target is not None:
+                graph.add_edge(source, target, **edge)
+
+        if graph.number_of_edges() == 0:
+            for source, neighbours in self.domain_graph.get("adjacency", {}).items():
+                for neighbour in neighbours:
+                    if isinstance(neighbour, dict):
+                        target = neighbour.get("target")
+                        edge_data = neighbour
+                    else:
+                        target = neighbour
+                        edge_data = {}
+                    if target is not None:
+                        graph.add_edge(source, target, **edge_data)
+
+        return graph
+
+    @staticmethod
+    def _edge_attributes(edge_data):
+        """Normalize persisted domain-edge metadata for workflow consumers."""
+        edge_data = dict(edge_data)
+        edge_data["relation"] = edge_data.get(
+            "relation", edge_data.get("transition", "success")
+        )
+        edge_data.setdefault("weight", 1)
+        return edge_data
+
     ###############################################################
     # REBEL Triplet Extraction Helper (Fixed Parser)
     ###############################################################
@@ -226,23 +276,61 @@ class GraphMatcher:
                 domain_id,
                 **best_node,
                 score=best_score,
-                prompt_text=concept["text"]
+                prompt_text=concept["text"],
+                inferred=False,
             )
 
         ###########################################################
-        # 4. Map Prompt Graph Edges to Domain Nodes
+        # 4. Build structure from domain-validated paths
         ###########################################################
 
-        for source, target, edge in prompt_graph.edges(data=True):
+        # Prompt edges describe the requested ordering.  They are deliberately
+        # not copied into the result; each mapped pair is connected only when
+        # the domain graph contains a directed path between them.
+        domain_digraph = self._as_domain_digraph()
+        explicitly_matched = set(prompt_to_domain_map.values())
+        unreachable_pairs = []
+
+        for source, target, prompt_edge in prompt_graph.edges(data=True):
             source_match = prompt_to_domain_map.get(source)
             target_match = prompt_to_domain_map.get(target)
 
-            if source_match and target_match and source_match != target_match:
-                matched_graph.add_edge(
-                    source_match,
-                    target_match,
-                    relation=edge.get("relation", "connected_to")
+            if not source_match or not target_match or source_match == target_match:
+                continue
+
+            try:
+                path = nx.shortest_path(
+                    domain_digraph,
+                    source=source_match,
+                    target=target_match,
+                    weight="weight",
                 )
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                unreachable_pairs.append({
+                    "source": source_match,
+                    "target": target_match,
+                    "prompt_relation": prompt_edge.get("relation"),
+                })
+                continue
+
+            for node_id in path:
+                if node_id in matched_graph:
+                    continue
+                node_data = dict(domain_digraph.nodes[node_id])
+                node_data["inferred"] = node_id not in explicitly_matched
+                if node_data["inferred"]:
+                    node_data.setdefault("prompt_text", node_data.get("name", str(node_id)))
+                matched_graph.add_node(node_id, **node_data)
+
+            for path_source, path_target in zip(path, path[1:]):
+                edge_data = self._edge_attributes(
+                    domain_digraph.edges[path_source, path_target]
+                )
+                matched_graph.add_edge(path_source, path_target, **edge_data)
+
+        # Kept as graph metadata so callers can surface a useful diagnostic
+        # without manufacturing a non-domain edge as a fallback.
+        matched_graph.graph["unreachable_prompt_pairs"] = unreachable_pairs
 
         return matched_graph
 

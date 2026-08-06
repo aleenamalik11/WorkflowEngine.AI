@@ -20,6 +20,22 @@ MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 OUTPUT = "models/domain_graph.pkl"
 
+# Lower values are preferred by weighted shortest-path routing. Connections
+# without an explicit category are part of the normal workflow and mandatory.
+EDGE_WEIGHTS = {
+    "mandatory": 1,
+    "optional": 5,
+    "deprecated": 100,
+}
+
+
+def edge_category_and_weight(transition):
+    """Map an optional/deprecated transition label to its routing cost."""
+    category = str(transition).strip().lower()
+    if category not in EDGE_WEIGHTS:
+        category = "mandatory"
+    return category, EDGE_WEIGHTS[category]
+
 ###############################################################
 # Load embedding model
 ###############################################################
@@ -143,13 +159,19 @@ for _, row in df.iterrows():
 
             target = id_to_name[target_id]
 
+            edge_category, edge_weight = edge_category_and_weight(transition)
+
             edge = {
 
                 "source": source,
 
                 "target": target,
 
-                "transition": transition
+                "transition": transition,
+
+                "edge_category": edge_category,
+
+                "weight": edge_weight,
 
             }
 
@@ -165,7 +187,11 @@ for _, row in df.iterrows():
 
                     "target": target,
 
-                    "transition": transition
+                    "transition": transition,
+
+                    "edge_category": edge_category,
+
+                    "weight": edge_weight,
 
                 }
 
@@ -177,7 +203,11 @@ for _, row in df.iterrows():
 
                     "source": source,
 
-                    "transition": transition
+                    "transition": transition,
+
+                    "edge_category": edge_category,
+
+                    "weight": edge_weight,
 
                 }
 

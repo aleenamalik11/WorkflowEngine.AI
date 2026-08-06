@@ -30,14 +30,14 @@ class GraphPlanner:
         ###########################################################
 
         for node_id, node in matched_graph.nodes(data=True):
+            node_data = dict(node)
+            node_data["inferred"] = node_data.get("inferred", False)
 
             workflow_graph.add_node(
 
                 node_id,
 
-                **node,
-
-                inferred=False
+                **node_data
 
             )
 
@@ -67,14 +67,14 @@ class GraphPlanner:
                 continue
 
             node = candidate["data"]
+            node_data = dict(node)
+            node_data["inferred"] = True
 
             workflow_graph.add_node(
 
                 candidate["node"],
 
-                **node,
-
-                inferred=True
+                **node_data
 
             )
 
