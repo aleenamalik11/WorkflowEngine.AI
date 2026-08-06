@@ -7,6 +7,8 @@ class GraphMatcher:
         "mandatory": 1,
         "alternative": 3,
         "optional": 5,
+        "deprecated": 100,
+    }
 
     def __init__(self,
                  embedding_service,
@@ -45,9 +47,9 @@ class GraphMatcher:
     def _as_domain_digraph(self):
         """Return the persisted domain graph in a form suitable for path queries."""
         if isinstance(self.domain_graph, nx.Graph):
-            if self.domain_graph.is_directed():
-                return self.domain_graph
-            return nx.DiGraph(self.domain_graph)
+            graph = nx.DiGraph()
+            graph.add_nodes_from(self.domain_graph.nodes(data=True))
+            graph.add_edges_from(
                 (source, target, self._edge_attributes(data))
                 for source, target, data in self.domain_graph.edges(data=True)
             )
