@@ -6,6 +6,7 @@ from pathlib import Path
 
 EDGE_WEIGHTS = {
     "mandatory": 1,
+    "alternative": 3,
     "optional": 5,
     "deprecated": 100,
 }
@@ -31,12 +32,16 @@ def apply_edge_weights(graph):
         for edge in records:
             if not isinstance(edge, dict):
                 continue
-            category = edge.get("edge_category", edge.get("transition", "mandatory"))
-            category = str(category).strip().lower()
-            if category not in EDGE_WEIGHTS:
-                category = "mandatory"
-            edge["edge_category"] = category
-            edge["weight"] = EDGE_WEIGHTS[category]
+            edge_type = edge.get(
+                "edge_type", edge.get("edge_category", edge.get("transition", "mandatory"))
+            )
+            edge_type = str(edge_type).strip().lower()
+            if edge_type not in EDGE_WEIGHTS:
+                edge_type = "mandatory"
+            edge["relation"] = edge.get("relation", edge.get("transition", "success"))
+            edge["edge_type"] = edge_type
+            edge.setdefault("weight", EDGE_WEIGHTS[edge_type])
+            edge.setdefault("confidence", 1.0)
 
 
 if __name__ == "__main__":

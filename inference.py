@@ -2,7 +2,7 @@ import json
 
 from prompt_builder_graph import PromptGraphBuilder
 from graph_matcher import GraphMatcher
-from candidate_retriever import CandidateRetriever
+from beam_search_planner import BeamSearchPlanner
 from graph_planner import GraphPlanner
 from workflow_generator import WorkflowGenerator
 
@@ -22,6 +22,10 @@ EMBEDDING_MODEL =  "sentence-transformers/all-MiniLM-L6-v2"
 DOMAIN_GRAPH = "models/domain_graph.pkl"
 
 FUNCTIONS = "functions.json"
+
+TOP_K = 5
+
+BEAM_WIDTH = 3
 
 ###############################################################
 # LOAD COMPONENTS
@@ -69,11 +73,11 @@ graph_matcher = GraphMatcher(
 )
 
 ###############################################################
-# Candidate Retriever
+# Beam Search Planner
 ###############################################################
 
-candidate_retriever = CandidateRetriever(
-    domain_graph
+beam_planner = BeamSearchPlanner(
+    beam_width=BEAM_WIDTH
 )
 
 ###############################################################
@@ -132,50 +136,54 @@ prompt_graph = prompt_graph_builder.build(
 # STEP 3
 ###############################################################
 
-print("[3] Matching Concepts...")
+print("[3] Matching Concepts (Top K candidates per action)...")
 
-matched_graph = graph_matcher.match(
-    prompt_graph
+candidate_plan = graph_matcher.candidates(
+    prompt_graph,
+    k=TOP_K
+)
+
+graph_matcher.print_candidates(
+    candidate_plan
 )
 
 ###############################################################
 # STEP 4
 ###############################################################
 
-print("[4] Retrieving Candidates...")
+print("\n[4] Running Beam Search Planner...")
 
-candidate_graph = candidate_retriever.retrieve(
-    matched_graph
+search_result = beam_planner.search(
+    candidate_plan
+)
+
+beam_planner.print_search(
+    search_result
 )
 
 ###############################################################
 # STEP 5
 ###############################################################
 
-print("[5] Ranking Missing Concepts...")
+print("\n[5] Expanding shortest domain paths...")
 
-ranked_candidates = candidate_retriever.rank_missing_nodes(
-    matched_graph,
-    candidate_graph
+workflow_graph = beam_planner.expand(
+    search_result
+)
+
+plan = planner.plan(
+    workflow_graph
+)
+
+planner.print_plan(
+    plan
 )
 
 ###############################################################
 # STEP 6
 ###############################################################
 
-print("[6] Planning Workflow...")
-
-plan = planner.plan(
-    matched_graph,
-    candidate_graph,
-    ranked_candidates
-)
-
-###############################################################
-# STEP 7
-###############################################################
-
-print("[7] Generating Workflow JSON...")
+print("\n[6] Generating Workflow JSON...")
 
 workflow = generator.generate(
     plan,

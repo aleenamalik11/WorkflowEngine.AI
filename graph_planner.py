@@ -3,102 +3,19 @@ import networkx as nx
 
 class GraphPlanner:
 
-    def __init__(self,
-                 similarity_threshold=0.75,
-                 candidate_threshold=2):
-
-        self.similarity_threshold = similarity_threshold
-        self.candidate_threshold = candidate_threshold
-
     ###############################################################
-    # Merge matched graph + inferred concepts
+    # Order the complete workflow graph discovered from domain paths
     ###############################################################
 
-    def plan(self,
-             matched_graph,
-             candidate_graph,
-             ranked_candidates):
+    def plan(self, workflow_graph):
 
         ###########################################################
-        # Start with matched graph
+        # Preserve matched and inferred path nodes
         ###########################################################
 
-        workflow_graph = nx.DiGraph()
-
-        ###########################################################
-        # Copy matched nodes
-        ###########################################################
-
-        for node_id, node in matched_graph.nodes(data=True):
-            node_data = dict(node)
-            node_data["inferred"] = node_data.get("inferred", False)
-
-            workflow_graph.add_node(
-
-                node_id,
-
-                **node_data
-
-            )
-
-        ###########################################################
-        # Copy matched edges
-        ###########################################################
-
-        for source, target, edge in matched_graph.edges(data=True):
-
-            workflow_graph.add_edge(
-
-                source,
-
-                target,
-
-                **edge
-
-            )
-
-        ###########################################################
-        # Infer missing concepts
-        ###########################################################
-
-        for candidate in ranked_candidates:
-
-            if candidate["score"] < self.candidate_threshold:
-                continue
-
-            node = candidate["data"]
-            node_data = dict(node)
-            node_data["inferred"] = True
-
-            workflow_graph.add_node(
-
-                candidate["node"],
-
-                **node_data
-
-            )
-
-        ###########################################################
-        # Restore connections
-        ###########################################################
-
-        for source, target, edge in candidate_graph.edges(data=True):
-
-            if source not in workflow_graph:
-                continue
-
-            if target not in workflow_graph:
-                continue
-
-            workflow_graph.add_edge(
-
-                source,
-
-                target,
-
-                **edge
-
-            )
+        workflow_graph = workflow_graph.copy()
+        for _, node in workflow_graph.nodes(data=True):
+            node.setdefault("inferred", False)
 
         ###########################################################
         # Topological Sort

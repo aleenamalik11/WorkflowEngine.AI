@@ -3,6 +3,10 @@ from utils import cosine_similarity
 
 
 class GraphMatcher:
+    EDGE_TYPE_WEIGHTS = {
+        "mandatory": 1,
+        "alternative": 3,
+        "optional": 5,
 
     def __init__(self,
                  embedding_service,
@@ -44,6 +48,10 @@ class GraphMatcher:
             if self.domain_graph.is_directed():
                 return self.domain_graph
             return nx.DiGraph(self.domain_graph)
+                (source, target, self._edge_attributes(data))
+                for source, target, data in self.domain_graph.edges(data=True)
+            )
+            return graph
 
         graph = nx.DiGraph()
 
@@ -62,7 +70,7 @@ class GraphMatcher:
             source = edge.get("source")
             target = edge.get("target")
             if source is not None and target is not None:
-                graph.add_edge(source, target, **edge)
+                graph.add_edge(source, target, **self._edge_attributes(edge))
 
         if graph.number_of_edges() == 0:
             for source, neighbours in self.domain_graph.get("adjacency", {}).items():
@@ -74,18 +82,28 @@ class GraphMatcher:
                         target = neighbour
                         edge_data = {}
                     if target is not None:
-                        graph.add_edge(source, target, **edge_data)
+                        graph.add_edge(
+                            source, target, **self._edge_attributes(edge_data)
+                        )
 
         return graph
 
-    @staticmethod
-    def _edge_attributes(edge_data):
+    @classmethod
+    def _edge_attributes(cls, edge_data):
         """Normalize persisted domain-edge metadata for workflow consumers."""
         edge_data = dict(edge_data)
         edge_data["relation"] = edge_data.get(
             "relation", edge_data.get("transition", "success")
         )
-        edge_data.setdefault("weight", 1)
+        edge_type = edge_data.get(
+            "edge_type", edge_data.get("edge_category", "mandatory")
+        )
+        edge_type = str(edge_type).strip().lower()
+        if edge_type not in cls.EDGE_TYPE_WEIGHTS:
+            edge_type = "mandatory"
+        edge_data["edge_type"] = edge_type
+        edge_data.setdefault("weight", cls.EDGE_TYPE_WEIGHTS[edge_type])
+        edge_data.setdefault("confidence", 1.0)
         return edge_data
 
     ###############################################################
@@ -232,6 +250,84 @@ class GraphMatcher:
         return concepts
 
     ###############################################################
+    # Top K candidates per prompt action (input for beam search)
+    ###############################################################
+
+    def candidates(self, prompt_graph, k=5, threshold=0.35):
+        """Propose the top ``k`` domain nodes for every prompt action.
+
+        Candidate selection is deliberately *not* resolved here: the beam
+        search planner decides which combination of candidates forms the best
+        workflow, because the best local match is not always the best step in
+        a sequence.
+        """
+        concepts = self._extract_concepts(prompt_graph)
+        domain_nodes = list(self._get_domain_nodes())
+        domain_digraph = self._as_domain_digraph()
+
+        actions = []
+
+        for concept in concepts:
+            query_embedding = self.embedding_service.encode(concept["text"])
+
+            scored = []
+            for node_id, node in domain_nodes:
+                embedding = node.get("embedding")
+                if embedding is None:
+                    continue
+
+                scored.append((
+                    cosine_similarity(query_embedding, embedding),
+                    node_id,
+                    node,
+                ))
+
+            scored.sort(key=lambda item: item[0], reverse=True)
+
+            candidates = [
+                {
+                    "domain_node_id": node_id,
+                    "domain_node_name": node.get("name", str(node_id)),
+                    "similarity": score,
+                }
+                for score, node_id, node in scored[:max(1, int(k))]
+                if score >= threshold
+            ]
+
+            actions.append({
+                "prompt_node_id": concept["node_id"],
+                "prompt_text": concept["text"],
+                "candidates": candidates,
+                "best_similarity": scored[0][0] if scored else None,
+                "threshold": threshold,
+            })
+
+        return {
+            "actions": actions,
+            "domain_graph": domain_digraph,
+        }
+
+    @staticmethod
+    def print_candidates(candidate_plan):
+        """Print the candidate shortlist produced for each prompt action."""
+        print("\nTop candidates per action")
+        for action in candidate_plan.get("actions", []):
+            print(f"- {action['prompt_text']}")
+            if not action["candidates"]:
+                best = action.get("best_similarity")
+                best_str = f"{best:.3f}" if best is not None else "n/a"
+                print(
+                    f"    no candidate above threshold "
+                    f"{action['threshold']:.3f} (best={best_str})"
+                )
+                continue
+            for candidate in action["candidates"]:
+                print(
+                    f"    {candidate['domain_node_name']} "
+                    f"({candidate['similarity']:.3f})"
+                )
+
+    ###############################################################
     # Match concepts against Domain Graph via Cosine Similarity
     ###############################################################
 
@@ -240,6 +336,7 @@ class GraphMatcher:
         matched_graph = nx.DiGraph()
 
         prompt_to_domain_map = {}
+        match_diagnostics = []
         domain_nodes = list(self._get_domain_nodes())
 
         for concept in concepts:
@@ -263,8 +360,22 @@ class GraphMatcher:
                     best_node = node
                     best_node_id = node_id
 
+            accepted = best_node is not None and best_score >= threshold
+            match_diagnostics.append({
+                "prompt_node_id": concept["node_id"],
+                "prompt_text": concept["text"],
+                "best_domain_node_id": best_node_id,
+                "best_domain_node_name": (
+                    best_node.get("name", str(best_node_id))
+                    if best_node is not None else None
+                ),
+                "score": best_score,
+                "threshold": threshold,
+                "accepted": accepted,
+            })
+
             # 3. Filter by similarity threshold
-            if best_node is None or best_score < threshold:
+            if not accepted:
                 continue
 
             # Persisted graph edges are keyed by the domain node key, rather
@@ -272,11 +383,25 @@ class GraphMatcher:
             domain_id = best_node_id
             prompt_to_domain_map[concept["node_id"]] = domain_id
 
+            if domain_id in matched_graph:
+                # Multiple prompt actions can resolve to one domain concept.
+                # Keep the strongest match and preserve every source action as
+                # diagnostics instead of silently overwriting prompt_text.
+                existing = matched_graph.nodes[domain_id]
+                existing["matched_prompt_texts"].append(concept["text"])
+                existing["matched_prompt_node_ids"].append(concept["node_id"])
+                if best_score > existing["score"]:
+                    existing["score"] = best_score
+                    existing["prompt_text"] = concept["text"]
+                continue
+
             matched_graph.add_node(
                 domain_id,
                 **best_node,
                 score=best_score,
                 prompt_text=concept["text"],
+                matched_prompt_texts=[concept["text"]],
+                matched_prompt_node_ids=[concept["node_id"]],
                 inferred=False,
             )
 
@@ -299,7 +424,7 @@ class GraphMatcher:
                 continue
 
             try:
-                path = nx.shortest_path(
+                path = nx.dijkstra_path(
                     domain_digraph,
                     source=source_match,
                     target=target_match,
@@ -331,6 +456,19 @@ class GraphMatcher:
         # Kept as graph metadata so callers can surface a useful diagnostic
         # without manufacturing a non-domain edge as a fallback.
         matched_graph.graph["unreachable_prompt_pairs"] = unreachable_pairs
+        matched_graph.graph["match_diagnostics"] = match_diagnostics
+        matched_graph.graph["unmatched_prompt_actions"] = [
+            item for item in match_diagnostics if not item["accepted"]
+        ]
+        matched_graph.graph["duplicate_domain_matches"] = [
+            {
+                "domain_node_id": node_id,
+                "domain_node_name": node.get("name", str(node_id)),
+                "prompt_texts": node["matched_prompt_texts"],
+            }
+            for node_id, node in matched_graph.nodes(data=True)
+            if len(node.get("matched_prompt_node_ids", [])) > 1
+        ]
 
         return matched_graph
 
@@ -354,3 +492,15 @@ class GraphMatcher:
             s_name = graph.nodes[source].get("name", source)
             t_name = graph.nodes[target].get("name", target)
             print(f"{s_name} -- {edge.get('relation', 'connected_to')} --> {t_name}")
+
+    @staticmethod
+    def print_match_diagnostics(graph):
+        """Print why each prompt action was accepted or rejected."""
+        print("\nMatch diagnostics")
+        for item in graph.graph.get("match_diagnostics", []):
+            outcome = "accepted" if item["accepted"] else "rejected"
+            score = item["score"]
+            print(
+                f"- {item['prompt_text']} -> {item['best_domain_node_name']} "
+                f"(score={score:.3f}, threshold={item['threshold']:.3f}, {outcome})"
+            )

@@ -24,17 +24,18 @@ OUTPUT = "models/domain_graph.pkl"
 # without an explicit category are part of the normal workflow and mandatory.
 EDGE_WEIGHTS = {
     "mandatory": 1,
+    "alternative": 3,
     "optional": 5,
     "deprecated": 100,
 }
 
 
-def edge_category_and_weight(transition):
-    """Map an optional/deprecated transition label to its routing cost."""
-    category = str(transition).strip().lower()
-    if category not in EDGE_WEIGHTS:
-        category = "mandatory"
-    return category, EDGE_WEIGHTS[category]
+def edge_type_and_weight(transition):
+    """Map an edge type label to its routing cost."""
+    edge_type = str(transition).strip().lower()
+    if edge_type not in EDGE_WEIGHTS:
+        edge_type = "mandatory"
+    return edge_type, EDGE_WEIGHTS[edge_type]
 
 ###############################################################
 # Load embedding model
@@ -159,7 +160,7 @@ for _, row in df.iterrows():
 
             target = id_to_name[target_id]
 
-            edge_category, edge_weight = edge_category_and_weight(transition)
+            edge_type, edge_weight = edge_type_and_weight(transition)
 
             edge = {
 
@@ -169,9 +170,13 @@ for _, row in df.iterrows():
 
                 "transition": transition,
 
-                "edge_category": edge_category,
+                "relation": transition,
+
+                "edge_type": edge_type,
 
                 "weight": edge_weight,
+
+                "confidence": 1.0,
 
             }
 
@@ -189,9 +194,13 @@ for _, row in df.iterrows():
 
                     "transition": transition,
 
-                    "edge_category": edge_category,
+                    "relation": transition,
+
+                    "edge_type": edge_type,
 
                     "weight": edge_weight,
+
+                    "confidence": 1.0,
 
                 }
 
@@ -205,9 +214,13 @@ for _, row in df.iterrows():
 
                     "transition": transition,
 
-                    "edge_category": edge_category,
+                    "relation": transition,
+
+                    "edge_type": edge_type,
 
                     "weight": edge_weight,
+
+                    "confidence": 1.0,
 
                 }
 
