@@ -1,14 +1,16 @@
 """
 Semantic parsing.
 
-The parser identifies what the user is asking for.
+The LLM discovers semantic workflow concepts.
 
-LLM enrichment is used to discover implicit workflow concepts,
-but the LLM does not create the workflow itself.
+It does NOT choose implementation functions and does NOT create
+the workflow graph.
+
+The domain graph later grounds the concepts.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -20,8 +22,9 @@ class SemanticStep:
 
     reason: str = ""
 
-    # Filled later by domain matching.
-    domain_candidates: List[Any] = field(default_factory=list)
+    domain_candidates: List[Any] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -72,27 +75,36 @@ class HybridSemanticParser:
         self.llm_service = llm_service
         self.enable_llm = enable_llm
 
-    def parse(self, prompt: str) -> SemanticInterpretation:
+    def parse(
+        self,
+        prompt: str,
+        domain_context=None,
+    ):
 
-        # ---------------------------------------------------------
-        # Existing deterministic parsing
-        # ---------------------------------------------------------
+        explicit_steps = (
+            self._extract_explicit_steps(
+                prompt
+            )
+        )
 
-        explicit_steps = self._extract_explicit_steps(prompt)
-
-        intent = self._infer_intent(prompt, explicit_steps)
-
-        # ---------------------------------------------------------
-        # LLM semantic enrichment
-        # ---------------------------------------------------------
+        intent = self._infer_intent(
+            prompt,
+            explicit_steps,
+        )
 
         inferred_steps = []
         dependencies = []
 
-        if self.enable_llm and self.llm_service:
+        if (
+            self.enable_llm
+            and self.llm_service
+        ):
 
-            llm_result = self.llm_service.enrich_prompt(
-                prompt
+            llm_result = (
+                self.llm_service.enrich_prompt(
+                    prompt,
+                    domain_context=domain_context,
+                )
             )
 
             intent = llm_result.get(
@@ -102,43 +114,51 @@ class HybridSemanticParser:
 
             inferred_steps = [
                 SemanticStep(
-                    text=item["text"],
+                    text=item.get(
+                        "text",
+                        "",
+                    ).strip(),
                     explicit=False,
-                    reason=item.get("reason", ""),
+                    reason=item.get(
+                        "reason",
+                        "",
+                    ),
                 )
                 for item in llm_result.get(
                     "inferred_steps",
                     [],
                 )
+                if item.get("text")
             ]
 
-            # We also allow the LLM to identify explicit steps.
-            #
-            # However, deterministic parsing remains authoritative
-            # when possible.
             llm_explicit = [
                 SemanticStep(
-                    text=item["text"],
+                    text=item.get(
+                        "text",
+                        "",
+                    ).strip(),
                     explicit=True,
-                    reason=item.get("reason", ""),
+                    reason=item.get(
+                        "reason",
+                        "",
+                    ),
                 )
                 for item in llm_result.get(
                     "explicit_steps",
                     [],
                 )
+                if item.get("text")
             ]
 
             if not explicit_steps and llm_explicit:
                 explicit_steps = llm_explicit
 
-            dependencies = llm_result.get(
-                "dependencies",
-                [],
+            dependencies = (
+                llm_result.get(
+                    "dependencies",
+                    [],
+                )
             )
-
-        # ---------------------------------------------------------
-        # Remove duplicate concepts
-        # ---------------------------------------------------------
 
         steps = self._merge_steps(
             explicit_steps,
@@ -162,20 +182,25 @@ class HybridSemanticParser:
         result = []
         seen = set()
 
-        # Explicit steps always get priority.
         for step in explicit_steps:
 
-            key = self._normalize(step.text)
+            key = self._normalize(
+                step.text
+            )
 
             if key not in seen:
+
                 seen.add(key)
                 result.append(step)
 
         for step in inferred_steps:
 
-            key = self._normalize(step.text)
+            key = self._normalize(
+                step.text
+            )
 
             if key not in seen:
+
                 seen.add(key)
                 result.append(step)
 
@@ -185,27 +210,59 @@ class HybridSemanticParser:
     def _normalize(text):
 
         return " ".join(
-            text.lower().strip().split()
+            text.lower()
+            .strip()
+            .split()
         )
 
-    # -------------------------------------------------------------
-    # Keep your existing implementation here
-    # -------------------------------------------------------------
+    def _extract_explicit_steps(
+        self,
+        prompt,
+    ):
 
-    def _extract_explicit_steps(self, prompt):
+        # Basic deterministic fallback.
+        #
+        # LLM enrichment can identify additional
+        # semantic steps.
 
-        # IMPORTANT:
-        # Replace this body with your existing Stage 1 parser.
-        #
-        # This fallback allows a simple prompt to become one step.
-        #
-        # Your existing parser should remain here instead.
+        separators = [
+            ", then ",
+            " then ",
+            ";",
+        ]
+
+        text = prompt.strip()
+
+        for separator in separators:
+
+            if separator in text:
+
+                parts = [
+                    p.strip()
+                    for p in text.split(
+                        separator
+                    )
+                    if p.strip()
+                ]
+
+                return [
+                    SemanticStep(
+                        text=part,
+                        explicit=True,
+                        reason=(
+                            "User-provided request."
+                        ),
+                    )
+                    for part in parts
+                ]
 
         return [
             SemanticStep(
-                text=prompt.strip(),
+                text=text,
                 explicit=True,
-                reason="User-provided request.",
+                reason=(
+                    "User-provided request."
+                ),
             )
         ]
 
@@ -216,6 +273,7 @@ class HybridSemanticParser:
     ):
 
         if explicit_steps:
+
             return explicit_steps[0].text
 
         return prompt.strip()

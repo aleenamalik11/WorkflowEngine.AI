@@ -1,71 +1,176 @@
 """
-Stage 6 + Stage 7.
+Relationship semantics.
 
-Ontology relationships never carry weights in Neo4j (per architectural
-constraint). This module is the single place that maps a relationship
-*type* to:
-  - a routing edge_type/weight pair (Stage 7, consumed by beam search)
-  - a semantic classification used before routing even starts (Stage 6):
-    REQUIRED / POSSIBLE / CONTEXT / OPTIONAL
+The domain graph stores ontology relationships only.
 
-Nothing here is learned or LLM-assigned; it is a static table, same spirit
-as the old EDGE_WEIGHTS dict in migrate_domain_graph_weights.py, just
-keyed by the real ontology relation names instead of a generic
-"transition" string.
+Weights are NOT stored in Neo4j.
+
+This module translates a relationship type into semantic meaning that can
+be used by the contextual subgraph builder and beam-search planner.
+
+IMPORTANT:
+
+These weights are NOT shortest-path/Dijkstra costs.
+
+They are relevance/order signals used when ranking neighboring concepts.
 """
 
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class RelationSemantics:
-    edge_type: str          # mandatory | alternative | optional
+    edge_type: str
     weight: float
-    classification: str      # REQUIRED | POSSIBLE | CONTEXT | OPTIONAL
-    traverses_for_ordering: bool  # does this relation contribute to execution order?
+    classification: str
+    traverses_for_ordering: bool
 
 
 RELATIONSHIP_TABLE = {
-    "OPERATION_REQUIRES":       RelationSemantics("mandatory",   1, "REQUIRED", True),
-    "OPERATION_PRECEDES":       RelationSemantics("mandatory",   1, "REQUIRED", True),
-    "OPERATION_INCLUDES":       RelationSemantics("mandatory",   2, "REQUIRED", True),
-    "OPERATION_CREATES":        RelationSemantics("alternative", 3, "POSSIBLE", True),
-    "OPERATION_MODIFIES":       RelationSemantics("alternative", 3, "POSSIBLE", True),
-    "OPERATION_VALIDATES":      RelationSemantics("alternative", 3, "POSSIBLE", True),
-    "OPERATION_ACCEPTS":        RelationSemantics("alternative", 4, "POSSIBLE", True),
-    "ACTOR_PERFORMS":           RelationSemantics("alternative", 4, "CONTEXT",  False),
-    "ENTITY_OWNS":              RelationSemantics("optional",    6, "CONTEXT",  False),
+    # Strong workflow/order relationships
+    "OPERATION_REQUIRES":
+        RelationSemantics("mandatory", 1.0, "REQUIRED", True),
 
-    # relations mentioned in the ontology but not given explicit weights in
-    # the spec -- given conservative defaults so they can't silently pull
-    # unrelated nodes into a "required" path.
-    "COMPONENT_EXECUTES":       RelationSemantics("optional",    5, "CONTEXT",  False),
-    "ACTOR_REQUESTS":           RelationSemantics("optional",    5, "CONTEXT",  False),
-    "OPERATION_PRODUCES":       RelationSemantics("alternative", 4, "POSSIBLE", True),
-    "OPERATION_PRODUCES_EVENT": RelationSemantics("optional",    5, "OPTIONAL", False),
-    "ENTITY_LINKED_TO":         RelationSemantics("optional",    6, "CONTEXT",  False),
-    "EVENT_TRIGGERS":           RelationSemantics("optional",    5, "OPTIONAL", False),
-    "EVENT_RELATES_TO":         RelationSemantics("optional",    6, "CONTEXT",  False),
-    "RULE_CONSTRAINS":          RelationSemantics("optional",    5, "CONTEXT",  False),
+    "OPERATION_PRECEDES":
+        RelationSemantics("mandatory", 1.0, "REQUIRED", True),
+
+    "OPERATION_INCLUDES":
+        RelationSemantics("mandatory", 2.0, "REQUIRED", True),
+
+    # Useful contextual relationships
+    "OPERATION_CREATES":
+        RelationSemantics("alternative", 3.0, "POSSIBLE", True),
+
+    "OPERATION_MODIFIES":
+        RelationSemantics("alternative", 3.0, "POSSIBLE", True),
+
+    "OPERATION_VALIDATES":
+        RelationSemantics("alternative", 3.0, "POSSIBLE", True),
+
+    "OPERATION_ACCEPTS":
+        RelationSemantics("alternative", 4.0, "POSSIBLE", True),
+
+    "OPERATION_PRODUCES":
+        RelationSemantics("alternative", 3.0, "POSSIBLE", True),
+
+    # Context-only relationships
+    "ACTOR_PERFORMS":
+        RelationSemantics("optional", 6.0, "CONTEXT", False),
+
+    "ACTOR_REQUESTS":
+        RelationSemantics("optional", 6.0, "CONTEXT", False),
+
+    "ENTITY_OWNS":
+        RelationSemantics("optional", 7.0, "CONTEXT", False),
+
+    "ENTITY_LINKED_TO":
+        RelationSemantics("optional", 7.0, "CONTEXT", False),
+
+    "EVENT_RELATES_TO":
+        RelationSemantics("optional", 7.0, "CONTEXT", False),
+
+    "RULE_CONSTRAINS":
+        RelationSemantics("optional", 5.0, "CONTEXT", False),
+
+    "COMPONENT_EXECUTES":
+        RelationSemantics("optional", 6.0, "CONTEXT", False),
+
+    "OPERATION_PRODUCES_EVENT":
+        RelationSemantics("optional", 6.0, "OPTIONAL", False),
+
+    "EVENT_TRIGGERS":
+        RelationSemantics("optional", 5.0, "OPTIONAL", False),
 }
 
-DEFAULT_SEMANTICS = RelationSemantics("optional", 8, "OPTIONAL", False)
+
+DEFAULT_SEMANTICS = RelationSemantics(
+    "optional",
+    8.0,
+    "OPTIONAL",
+    False,
+)
+
+
+PROMPT_RELATION_TABLE = {
+    "PROMPT_PRECEDES":
+        RelationSemantics("mandatory", 0.0, "REQUIRED", True),
+
+    "PROMPT_AND":
+        RelationSemantics("alternative", 2.0, "POSSIBLE", True),
+
+    "PROMPT_OR":
+        RelationSemantics("alternative", 2.0, "POSSIBLE", False),
+
+    "PROMPT_CONDITION":
+        RelationSemantics("optional", 4.0, "CONTEXT", False),
+
+    "PROMPT_UNLESS":
+        RelationSemantics("optional", 4.0, "CONTEXT", False),
+
+    "PROMPT_DEPENDENCY":
+        RelationSemantics("mandatory", 0.0, "REQUIRED", True),
+}
 
 
 def semantics_for(relation: str) -> RelationSemantics:
-    return RELATIONSHIP_TABLE.get(relation, DEFAULT_SEMANTICS)
+    """
+    Return semantic information for a domain relationship.
+    """
+    return RELATIONSHIP_TABLE.get(
+        relation,
+        DEFAULT_SEMANTICS,
+    )
 
 
-# Prompt-derived constraints (Stage 5) get their own, separate weighting so
-# they can never be confused with permanent ontology edges downstream.
-PROMPT_RELATION_TABLE = {
-    "PROMPT_PRECEDES": RelationSemantics("mandatory", 1, "REQUIRED", True),
-    "PROMPT_AND":       RelationSemantics("alternative", 2, "POSSIBLE", True),
-    "PROMPT_OR":        RelationSemantics("alternative", 2, "POSSIBLE", False),
-    "PROMPT_CONDITION": RelationSemantics("optional", 4, "CONTEXT", False),
-    "PROMPT_UNLESS":    RelationSemantics("optional", 4, "CONTEXT", False),
-}
+def semantics_for_prompt_relation(
+    relation: str,
+) -> RelationSemantics:
+    """
+    Return semantic information for a prompt-derived relationship.
+    """
+    return PROMPT_RELATION_TABLE.get(
+        relation,
+        RelationSemantics(
+            "optional",
+            5.0,
+            "OPTIONAL",
+            False,
+        ),
+    )
 
 
-def semantics_for_prompt_relation(relation: str) -> RelationSemantics:
-    return PROMPT_RELATION_TABLE.get(relation, RelationSemantics("optional", 5, "OPTIONAL", False))
+def apply_relationship_semantics(graph):
+    """
+    Apply relationship semantics to every graph edge.
+
+    This does NOT perform graph traversal.
+
+    It simply annotates each edge with:
+        edge_type
+        weight
+        classification
+        traverses_for_ordering
+    """
+
+    for source, target, data in graph.edges(data=True):
+
+        relation = data.get(
+            "relation",
+            "",
+        )
+
+        if relation.startswith("PROMPT_"):
+            semantics = semantics_for_prompt_relation(
+                relation
+            )
+        else:
+            semantics = semantics_for(
+                relation
+            )
+
+        data["edge_type"] = semantics.edge_type
+        data["weight"] = semantics.weight
+        data["classification"] = semantics.classification
+        data["traverses_for_ordering"] = (
+            semantics.traverses_for_ordering
+        )

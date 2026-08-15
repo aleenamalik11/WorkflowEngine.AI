@@ -1,18 +1,20 @@
 """
-Command-line entry point for WorkflowEngine.AI.
+Command-line entry point.
 
-Usage:
+Examples:
 
     python inference.py "transfer funds"
 
-or:
-
     python inference.py "check balance, then transfer funds"
+
+The command-line layer is intentionally thin.
+
+All workflow reasoning happens inside WorkflowPipeline.
 """
 
-import sys
 import json
 import os
+import sys
 
 from pipeline import WorkflowPipeline
 
@@ -29,12 +31,14 @@ from utils import EmbeddingService
 from function_matcher import FunctionMatcher
 
 
-def build_domain_graph():
+def build_domain_graph(
+    embedding_service,
+):
     """
-    Replace this with your actual Neo4jDomainGraph configuration
-    when running against the real domain graph.
+    Local/demo domain ontology.
 
-    Keeping this function here makes inference easy to run locally.
+    Replace this with Neo4jDomainGraph when connecting
+    to the real ontology.
     """
 
     nodes = {
@@ -44,6 +48,15 @@ def build_domain_graph():
                 id="validate_transfer",
                 name="Validate Transfer Request",
                 node_type="Operation",
+                description=(
+                    "Validate the transfer request "
+                    "before processing."
+                ),
+                aliases=[
+                    "validate transfer",
+                    "validate request",
+                    "verify transfer request",
+                ],
             ),
 
         "check_balance":
@@ -51,6 +64,15 @@ def build_domain_graph():
                 id="check_balance",
                 name="Check Balance",
                 node_type="Operation",
+                description=(
+                    "Check the available account balance "
+                    "before transferring funds."
+                ),
+                aliases=[
+                    "check account balance",
+                    "verify balance",
+                    "check available funds",
+                ],
             ),
 
         "process_transfer":
@@ -58,6 +80,14 @@ def build_domain_graph():
                 id="process_transfer",
                 name="Process Transfer",
                 node_type="Operation",
+                description=(
+                    "Process and execute a funds transfer."
+                ),
+                aliases=[
+                    "execute transfer",
+                    "process funds transfer",
+                    "execute funds transfer",
+                ],
             ),
 
         "generate_transfer_response":
@@ -65,6 +95,15 @@ def build_domain_graph():
                 id="generate_transfer_response",
                 name="Generate Transfer Response",
                 node_type="Operation",
+                description=(
+                    "Generate the result of the transfer "
+                    "operation."
+                ),
+                aliases=[
+                    "transfer response",
+                    "return transfer result",
+                    "generate response",
+                ],
             ),
 
         "transfer_funds":
@@ -72,6 +111,15 @@ def build_domain_graph():
                 id="transfer_funds",
                 name="Transfer Funds",
                 node_type="Operation",
+                description=(
+                    "Transfer funds from one account "
+                    "to another account."
+                ),
+                aliases=[
+                    "fund transfer",
+                    "move money",
+                    "send funds",
+                ],
             ),
     }
 
@@ -84,6 +132,12 @@ def build_domain_graph():
         ),
 
         DomainRelationship(
+            "validate_transfer",
+            "check_balance",
+            "OPERATION_REQUIRES",
+        ),
+
+        DomainRelationship(
             "check_balance",
             "process_transfer",
             "OPERATION_PRECEDES",
@@ -98,26 +152,33 @@ def build_domain_graph():
         DomainRelationship(
             "validate_transfer",
             "transfer_funds",
+            "OPERATION_REQUIRES",
+        ),
+
+        DomainRelationship(
+            "transfer_funds",
+            "process_transfer",
             "OPERATION_PRECEDES",
         ),
 
         DomainRelationship(
             "transfer_funds",
             "generate_transfer_response",
-            "OPERATION_PRECEDES",
+            "OPERATION_PRODUCES",
         ),
     ]
 
     return InMemoryDomainGraph(
         nodes,
         relationships,
+        embedding_service=embedding_service,
     )
 
 
 def main():
 
     # ---------------------------------------------------------
-    # Get prompt
+    # Prompt
     # ---------------------------------------------------------
 
     if len(sys.argv) > 1:
@@ -134,12 +195,29 @@ def main():
 
     if not prompt:
 
-        print("No prompt supplied.")
+        print(
+            "No prompt supplied."
+        )
 
         return
 
     print(
         f"\nUser prompt:\n{prompt}\n"
+    )
+
+    # ---------------------------------------------------------
+    # Embedding model
+    # ---------------------------------------------------------
+
+    embedding_model = os.getenv(
+        "EMBEDDING_MODEL",
+        "sentence-transformers/all-MiniLM-L6-v2",
+    )
+
+    embedding_service = (
+        EmbeddingService(
+            embedding_model
+        )
     )
 
     # ---------------------------------------------------------
@@ -154,38 +232,30 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Embeddings
-    # ---------------------------------------------------------
-
-    embedding_service = EmbeddingService(
-        os.getenv(
-            "EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-    )
-
-    # ---------------------------------------------------------
     # Domain graph
     # ---------------------------------------------------------
 
-    domain_client = build_domain_graph()
+    domain_client = build_domain_graph(
+        embedding_service
+    )
 
     # ---------------------------------------------------------
     # Function matcher
     # ---------------------------------------------------------
 
-    function_matcher = FunctionMatcher(
-        os.getenv(
-            "EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
+    function_matcher = (
+        FunctionMatcher(
+            embedding_model
         )
     )
 
+    functions_file = os.getenv(
+        "FUNCTIONS_FILE",
+        "functions.json",
+    )
+
     function_matcher.load(
-        os.getenv(
-            "FUNCTIONS_FILE",
-            "functions.json",
-        )
+        functions_file
     )
 
     # ---------------------------------------------------------
@@ -193,13 +263,21 @@ def main():
     # ---------------------------------------------------------
 
     pipeline = WorkflowPipeline(
+
         domain_client=domain_client,
+
         embedding_service=embedding_service,
+
         function_matcher=function_matcher,
+
         llm_service=llm_service,
+
         beam_width=3,
+
         top_k=5,
+
         neighborhood_depth=1,
+
         verbose=True,
     )
 
@@ -213,7 +291,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Result
+    # Final result
     # ---------------------------------------------------------
 
     print(
@@ -221,7 +299,9 @@ def main():
         + "=" * 70
     )
 
-    print("FINAL WORKFLOW")
+    print(
+        "FINAL WORKFLOW"
+    )
 
     print(
         "=" * 70

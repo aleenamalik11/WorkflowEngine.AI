@@ -1,19 +1,31 @@
 """
-Stage 3-6:
-    semantic concepts
-        -> candidate domain nodes
-        -> immediate neighborhood expansion
-        -> contextual subgraph
+Stages 3-6:
+
+    Semantic steps
+        |
+        +--> semantic + lexical candidate matching
+        |
+        +--> immediate neighborhood expansion
+        |
+        +--> semantic re-ranking of neighboring concepts
+        |
+        +--> contextual domain graph
+        |
+        +--> prompt dependency edges
 
 No Dijkstra.
-No shortest-path selection.
+No shortest-path routing.
 
-The graph is used to discover local semantic context.
+Relationship weights are used only as relevance/order signals.
 """
 
+import math
 import networkx as nx
 
-from relationship_semantics import apply_relationship_semantics
+from relationship_semantics import (
+    apply_relationship_semantics,
+    semantics_for,
+)
 
 
 def build_contextual_subgraph(
@@ -23,75 +35,122 @@ def build_contextual_subgraph(
     k=5,
     neighborhood_depth=1,
 ):
+    """
+    Build the contextual planning structure.
+
+    Important design rule:
+
+    The NetworkX graph represents DOMAIN structure.
+
+    Candidate mappings are kept separately because one domain node may
+    correspond to multiple semantic steps.
+    """
 
     domain_graph = nx.DiGraph()
+
+    candidate_map = {}
 
     candidates_debug = []
     context_attachments = []
     constraint_edges = []
 
+    # Used to avoid repeated relationship debug entries.
+    seen_context_edges = set()
+
+    # Used to remember the best semantic score for a domain node.
+    best_node_score = {}
+
     # ---------------------------------------------------------
-    # IMPORTANT:
+    # STAGE 3
     #
-    # Process EVERY semantic step independently.
+    # Match EVERY semantic step independently.
     # ---------------------------------------------------------
 
     for step_index, step in enumerate(
         interpretation.steps
     ):
 
-        embedding = embedding_service.encode(
+        step_embedding = embedding_service.encode(
             step.text
         )
 
-        candidates = domain_client.candidate_nodes(
+        direct_candidates = domain_client.candidate_nodes(
             text=step.text,
-            embedding=embedding,
+            embedding=step_embedding,
             k=k,
         )
 
-        candidates_debug.append(
-            {
-                "step": step.text,
-                "explicit": step.explicit,
-                "candidates": [
-                    {
-                        "id": candidate.node.id,
-                        "name": candidate.node.name,
-                        "type": candidate.node.node_type,
-                        "score": candidate.score,
-                    }
-                    for candidate in candidates
-                ],
-            }
-        )
+        step_candidates = []
 
-        # -----------------------------------------------------
-        # Add ALL good candidates, not just candidate[0].
-        # -----------------------------------------------------
-
-        for candidate in candidates:
+        for candidate in direct_candidates:
 
             node = candidate.node
 
-            domain_graph.add_node(
-                node.id,
-                name=node.name,
-                node_type=node.node_type,
-                description=node.description,
-                semantic_score=candidate.score,
-                prompt_text=step.text,
-                explicit=step.explicit,
+            lexical_score = _lexical_similarity(
+                step.text,
+                node.name,
+                node.aliases,
+                node.description,
+            )
+
+            semantic_score = _semantic_similarity(
+                step_embedding,
+                node.embedding,
+            )
+
+            combined_score = _combined_score(
+                lexical_score,
+                semantic_score,
+                candidate.score,
+            )
+
+            item = {
+                "node_id": node.id,
+                "name": node.name,
+                "node_type": node.node_type,
+                "score": combined_score,
+                "lexical_score": lexical_score,
+                "semantic_score": semantic_score,
+                "explicit": bool(step.explicit),
+                "inferred": not bool(step.explicit),
+                "source": "direct",
+                "prompt_text": step.text,
+            }
+
+            step_candidates.append(item)
+
+            _add_domain_node(
+                domain_graph,
+                node,
+                item,
+            )
+
+            best_node_score[node.id] = max(
+                best_node_score.get(
+                    node.id,
+                    0.0,
+                ),
+                combined_score,
             )
 
         # -----------------------------------------------------
-        # Expand immediate neighborhood of candidates.
+        # STAGE 4
+        #
+        # Expand the immediate neighborhood.
+        #
+        # Neighborhood nodes are NOT automatically accepted.
+        # They are semantically re-ranked first.
         # -----------------------------------------------------
 
-        for candidate in candidates:
+        neighborhood_seed_ids = [
+            item["node_id"]
+            for item in step_candidates
+        ]
+
+        for seed_id in neighborhood_seed_ids:
 
             relationships = domain_client.neighborhood(
-                candidate.node.id,
+                seed_id,
                 depth=neighborhood_depth,
             )
 
@@ -108,41 +167,254 @@ def build_contextual_subgraph(
                 if source is None or target is None:
                     continue
 
-                domain_graph.add_node(
-                    source.id,
-                    name=source.name,
-                    node_type=source.node_type,
-                    description=source.description,
+                _add_domain_node(
+                    domain_graph,
+                    source,
+                    None,
                 )
 
-                domain_graph.add_node(
-                    target.id,
-                    name=target.name,
-                    node_type=target.node_type,
-                    description=target.description,
+                _add_domain_node(
+                    domain_graph,
+                    target,
+                    None,
                 )
 
+                # Preserve the ontology edge.
                 domain_graph.add_edge(
                     source.id,
                     target.id,
                     relation=relationship.relation,
                     inferred_context=True,
+                    origin="domain",
                 )
 
-                context_attachments.append(
-                    {
-                        "from": candidate.node.name,
-                        "source": source.name,
-                        "target": target.name,
-                        "relation": relationship.relation,
-                    }
+                context_key = (
+                    source.id,
+                    relationship.relation,
+                    target.id,
                 )
+
+                if context_key not in seen_context_edges:
+
+                    seen_context_edges.add(
+                        context_key
+                    )
+
+                    context_attachments.append(
+                        {
+                            "seed": seed_id,
+                            "source": source.name,
+                            "target": target.name,
+                            "relation": relationship.relation,
+                        }
+                    )
+
+                # -------------------------------------------------
+                # Semantically evaluate BOTH endpoints as possible
+                # inferred concepts.
+                # -------------------------------------------------
+
+                for neighbor in (
+                    source,
+                    target,
+                ):
+
+                    if neighbor.id in {
+                        item["node_id"]
+                        for item in step_candidates
+                    }:
+                        continue
+
+                    neighbor_embedding = (
+                        neighbor.embedding
+                    )
+
+                    # Some graph implementations may not store
+                    # embeddings on nodes. Generate one from the
+                    # semantic text if necessary.
+                    if neighbor_embedding is None:
+
+                        neighbor_embedding = (
+                            embedding_service.encode(
+                                _node_text(neighbor)
+                            )
+                        )
+
+                    lexical_score = _lexical_similarity(
+                        step.text,
+                        neighbor.name,
+                        neighbor.aliases,
+                        neighbor.description,
+                    )
+
+                    semantic_score = _semantic_similarity(
+                        step_embedding,
+                        neighbor_embedding,
+                    )
+
+                    relation_score = _relationship_relevance(
+                        relationship.relation
+                    )
+
+                    contextual_score = (
+                        0.50 * semantic_score
+                        + 0.25 * lexical_score
+                        + 0.25 * relation_score
+                    )
+
+                    # Don't pull every arbitrary neighbor into
+                    # the workflow.
+                    #
+                    # The threshold is deliberately permissive
+                    # because this is contextual inference rather
+                    # than final function matching.
+                    if contextual_score < 0.25:
+                        continue
+
+                    inferred_item = {
+                        "node_id": neighbor.id,
+                        "name": neighbor.name,
+                        "node_type": neighbor.node_type,
+                        "score": contextual_score,
+                        "lexical_score": lexical_score,
+                        "semantic_score": semantic_score,
+                        "explicit": False,
+                        "inferred": True,
+                        "source": "neighborhood",
+                        "prompt_text": step.text,
+                        "relation_score": relation_score,
+                    }
+
+                    step_candidates.append(
+                        inferred_item
+                    )
+
+                    best_node_score[neighbor.id] = max(
+                        best_node_score.get(
+                            neighbor.id,
+                            0.0,
+                        ),
+                        contextual_score,
+                    )
+
+        # -----------------------------------------------------
+        # Deduplicate candidates for THIS semantic step.
+        # -----------------------------------------------------
+
+        deduped = {}
+
+        for item in step_candidates:
+
+            node_id = item["node_id"]
+
+            existing = deduped.get(node_id)
+
+            if existing is None:
+
+                deduped[node_id] = item
+
+            elif item["score"] > existing["score"]:
+
+                # Preserve explicit status if either occurrence
+                # was explicit.
+                item["explicit"] = (
+                    item["explicit"]
+                    or existing["explicit"]
+                )
+
+                item["inferred"] = (
+                    not item["explicit"]
+                )
+
+                deduped[node_id] = item
+
+        step_candidates = list(
+            deduped.values()
+        )
+
+        step_candidates.sort(
+            key=lambda x: x["score"],
+            reverse=True,
+        )
+
+        step_candidates = step_candidates[
+            : max(k * 2, 10)
+        ]
+
+        candidate_map[step_index] = (
+            step_candidates
+        )
+
+        candidates_debug.append(
+            {
+                "step_index": step_index,
+                "step": step.text,
+                "explicit": bool(step.explicit),
+                "candidates": step_candidates,
+            }
+        )
 
     # ---------------------------------------------------------
-    # Apply relationship semantics.
+    # STAGE 5
     #
-    # This gives relationships meaning but does NOT perform
-    # shortest-path routing.
+    # LLM-derived semantic dependencies.
+    #
+    # Resolve dependencies AGAINST THE CANDIDATE MAP rather
+    # than against prompt_text stored on shared graph nodes.
+    # ---------------------------------------------------------
+
+    for dependency in interpretation.dependencies:
+
+        before = dependency.get(
+            "before"
+        )
+
+        after = dependency.get(
+            "after"
+        )
+
+        if not before or not after:
+            continue
+
+        before_node = _best_candidate_for_text(
+            interpretation.steps,
+            candidate_map,
+            before,
+        )
+
+        after_node = _best_candidate_for_text(
+            interpretation.steps,
+            candidate_map,
+            after,
+        )
+
+        if before_node is None or after_node is None:
+            continue
+
+        if before_node == after_node:
+            continue
+
+        domain_graph.add_edge(
+            before_node,
+            after_node,
+            relation="PROMPT_DEPENDENCY",
+            inferred_context=True,
+            origin="prompt",
+        )
+
+        constraint_edges.append(
+            {
+                "before": before,
+                "after": after,
+                "source_node": before_node,
+                "target_node": after_node,
+            }
+        )
+
+    # ---------------------------------------------------------
+    # STAGE 6 / 7
+    #
+    # Apply relationship semantics.
     # ---------------------------------------------------------
 
     apply_relationship_semantics(
@@ -150,102 +422,341 @@ def build_contextual_subgraph(
     )
 
     # ---------------------------------------------------------
-    # Prompt dependencies from the LLM
+    # Candidate information for nodes that are not direct
+    # candidates but are useful contextual concepts.
     # ---------------------------------------------------------
 
-    for dependency in interpretation.dependencies:
+    inferred_nodes = []
 
-        before = dependency.get("before")
-        after = dependency.get("after")
+    direct_ids = set()
 
-        if not before or not after:
+    for candidates in candidate_map.values():
+
+        for candidate in candidates:
+
+            if candidate["source"] == "direct":
+                direct_ids.add(
+                    candidate["node_id"]
+                )
+
+    for node_id, data in domain_graph.nodes(
+        data=True
+    ):
+
+        if node_id in direct_ids:
             continue
 
-        before_node = _find_semantic_node(
-            domain_graph,
-            before,
+        inferred_nodes.append(
+            {
+                "node_id": node_id,
+                "name": data.get(
+                    "name",
+                    node_id,
+                ),
+                "score": best_node_score.get(
+                    node_id,
+                    0.0,
+                ),
+                "inferred": True,
+            }
         )
 
-        after_node = _find_semantic_node(
-            domain_graph,
-            after,
-        )
-
-        if before_node and after_node:
-
-            domain_graph.add_edge(
-                before_node,
-                after_node,
-                relation="PROMPT_DEPENDENCY",
-                inferred_context=True,
-                weight=0.0,
-            )
-
-            constraint_edges.append(
-                {
-                    "before": before,
-                    "after": after,
-                    "source_node": before_node,
-                    "target_node": after_node,
-                }
-            )
+    inferred_nodes.sort(
+        key=lambda x: x["score"],
+        reverse=True,
+    )
 
     candidate_plan = {
-
         "domain_graph": domain_graph,
+
+        # CRITICAL:
+        # This preserves the relationship between a semantic
+        # prompt step and its candidate domain nodes.
+        "candidate_map": candidate_map,
 
         "semantic_steps": interpretation.steps,
 
         "intent": interpretation.intent,
+
+        "inferred_nodes": inferred_nodes,
     }
 
     debug = {
-
         "candidates": candidates_debug,
 
         "context_attachments": context_attachments,
 
         "prompt_constraint_edges": constraint_edges,
+
+        "inferred_nodes": inferred_nodes,
     }
 
     return candidate_plan, debug
 
 
-def _find_semantic_node(
+# =============================================================
+# Helpers
+# =============================================================
+
+
+def _add_domain_node(
     graph,
+    node,
+    candidate=None,
+):
+    """
+    Add/update a domain node WITHOUT storing prompt-specific
+    candidate state on the node.
+    """
+
+    if node.id not in graph:
+
+        graph.add_node(
+            node.id,
+            name=node.name,
+            node_type=node.node_type,
+            description=node.description,
+            aliases=list(
+                node.aliases or []
+            ),
+            embedding=node.embedding,
+        )
+
+    else:
+
+        data = graph.nodes[node.id]
+
+        if not data.get("name"):
+            data["name"] = node.name
+
+        if not data.get("description"):
+            data["description"] = (
+                node.description
+            )
+
+        if not data.get("embedding"):
+            data["embedding"] = (
+                node.embedding
+            )
+
+
+def _node_text(node):
+    parts = [
+        node.name or "",
+        node.description or "",
+    ]
+
+    parts.extend(
+        node.aliases or []
+    )
+
+    return " ".join(
+        p for p in parts if p
+    )
+
+
+def _semantic_similarity(
+    a,
+    b,
+):
+    if a is None or b is None:
+        return 0.0
+
+    try:
+        dot = sum(
+            x * y
+            for x, y in zip(a, b)
+        )
+
+        norm_a = math.sqrt(
+            sum(x * x for x in a)
+        )
+
+        norm_b = math.sqrt(
+            sum(y * y for y in b)
+        )
+
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+
+        # Sentence embeddings can theoretically produce
+        # negative cosine values. Normalize to [0, 1].
+        cosine = dot / (
+            norm_a * norm_b
+        )
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                (cosine + 1.0) / 2.0,
+            ),
+        )
+
+    except Exception:
+        return 0.0
+
+
+def _lexical_similarity(
+    query,
+    name,
+    aliases=None,
+    description="",
+):
+    query_tokens = set(
+        _normalize(query).split()
+    )
+
+    if not query_tokens:
+        return 0.0
+
+    candidates = [
+        name or "",
+        *(aliases or []),
+        description or "",
+    ]
+
+    best = 0.0
+
+    for candidate in candidates:
+
+        candidate_tokens = set(
+            _normalize(candidate).split()
+        )
+
+        if not candidate_tokens:
+            continue
+
+        intersection = (
+            query_tokens
+            & candidate_tokens
+        )
+
+        union = (
+            query_tokens
+            | candidate_tokens
+        )
+
+        score = (
+            len(intersection)
+            / len(union)
+        )
+
+        best = max(
+            best,
+            score,
+        )
+
+    return best
+
+
+def _normalize(text):
+    return (
+        str(text)
+        .lower()
+        .replace("_", " ")
+        .strip()
+    )
+
+
+def _combined_score(
+    lexical_score,
+    semantic_score,
+    candidate_score,
+):
+    """
+    Candidate score from DomainGraphClient is already a
+    lexical/embedding blend.
+
+    We still recompute semantic and lexical similarity here
+    so the planner has transparent scores.
+
+    The explicit semantic/lexical values dominate.
+    """
+
+    return (
+        0.45 * semantic_score
+        + 0.35 * lexical_score
+        + 0.20 * max(
+            0.0,
+            min(
+                1.0,
+                candidate_score,
+            ),
+        )
+    )
+
+
+def _relationship_relevance(
+    relation,
+):
+    """
+    Convert ontology relationship semantics into a relevance
+    score.
+
+    IMPORTANT:
+    This is NOT a path cost.
+
+    Lower relationship weights mean stronger semantic relevance.
+    """
+
+    semantics = semantics_for(
+        relation
+    )
+
+    if semantics.classification == "REQUIRED":
+        return 1.0
+
+    if semantics.classification == "POSSIBLE":
+        return 0.75
+
+    if semantics.classification == "CONTEXT":
+        return 0.40
+
+    return 0.20
+
+
+def _best_candidate_for_text(
+    steps,
+    candidate_map,
     text,
 ):
+    """
+    Resolve a semantic dependency text to the best matching
+    candidate across semantic steps.
+    """
 
-    normalized = text.lower().strip()
+    normalized = _normalize(
+        text
+    )
 
-    # Exact semantic text/name match first.
-    for node_id, data in graph.nodes(data=True):
+    best = None
+    best_score = -1.0
 
-        name = data.get(
-            "name",
-            "",
-        ).lower().strip()
+    for index, step in enumerate(
+        steps
+    ):
 
-        prompt_text = data.get(
-            "prompt_text",
-            "",
-        ).lower().strip()
+        step_similarity = _lexical_similarity(
+            normalized,
+            step.text,
+        )
 
-        if normalized == name:
-            return node_id
+        for candidate in candidate_map.get(
+            index,
+            [],
+        ):
 
-        if normalized == prompt_text:
-            return node_id
+            score = (
+                0.65 * candidate["score"]
+                + 0.35 * step_similarity
+            )
 
-    # Then substring match.
-    for node_id, data in graph.nodes(data=True):
+            if score > best_score:
 
-        name = data.get(
-            "name",
-            "",
-        ).lower()
+                best_score = score
+                best = candidate[
+                    "node_id"
+                ]
 
-        if normalized in name or name in normalized:
-            return node_id
-
-    return None
+    return best
