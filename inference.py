@@ -1,25 +1,26 @@
 """
 Command-line entry point.
 
+Neo4j is the source of truth for the domain graph.
+
+The application continuously accepts workflow prompts.
+
 Examples:
-
-    python inference.py
-
-Then enter prompts interactively:
 
     transfer funds
 
-    check balance, then transfer funds
+    check account balance, then transfer funds
 
-    I want to send $500 to another account. Make sure
-    the request is valid and that I have enough funds first.
+    I want to send $500 to my savings account.
+    Make sure there is enough money first.
 
-The command-line layer is intentionally thin.
+Commands:
 
-All workflow reasoning happens inside WorkflowPipeline.
+    exit
+    quit
+    q
 
-The domain ontology is loaded from Neo4j. The in-memory graph
-is NOT used here because Neo4j is the source of truth.
+    debug
 """
 
 import json
@@ -28,18 +29,23 @@ import os
 from neo4j import GraphDatabase
 
 from pipeline import WorkflowPipeline
+
 from llm_service import LLMService
-from domain_graph_client import Neo4jDomainGraph
+
+from domain_graph_client import (
+    Neo4jDomainGraph,
+)
+
 from utils import EmbeddingService
+
 from function_matcher import FunctionMatcher
 
 
-def create_neo4j_driver():
-    """
-    Create the Neo4j driver.
+# =============================================================
+# Neo4j
+# =============================================================
 
-    Local development configuration.
-    """
+def create_neo4j_driver():
 
     uri = os.getenv(
         "NEO4J_URI",
@@ -47,13 +53,16 @@ def create_neo4j_driver():
     )
 
     username = os.getenv(
-        "NEO4J_USER",
+        "NEO4J_USERNAME",
         "neo4j",
     )
 
-    # Temporary hardcoded password for local development.
-    # Move this to an environment variable before committing.
     password = "helloworld"
+
+    database = os.getenv(
+        "NEO4J_DATABASE",
+        "neo4j",
+    )
 
     print(
         f"Neo4j URI: {uri}"
@@ -63,7 +72,7 @@ def create_neo4j_driver():
         f"Neo4j user: {username}"
     )
 
-    return GraphDatabase.driver(
+    driver = GraphDatabase.driver(
         uri,
         auth=(
             username,
@@ -71,105 +80,108 @@ def create_neo4j_driver():
         ),
     )
 
+    driver.verify_connectivity()
+
+    print(
+        "Neo4j connection established."
+    )
+
+    return driver, database
+
+
+# =============================================================
+# Main
+# =============================================================
 
 def main():
 
-    # =========================================================
-    # Configuration
-    # =========================================================
+    # ---------------------------------------------------------
+    # Embedding model
+    # ---------------------------------------------------------
 
     embedding_model = os.getenv(
         "EMBEDDING_MODEL",
         "sentence-transformers/all-MiniLM-L6-v2",
     )
 
-    hf_model = os.getenv(
-        "HF_MODEL",
-        "Qwen/Qwen2.5-7B-Instruct",
-    )
-
-    neo4j_database = os.getenv(
-        "NEO4J_DATABASE",
-        "neo4j",
-    )
-
-    fulltext_index = os.getenv(
-        "NEO4J_FULLTEXT_INDEX",
-        "domainNodeSearch",
-    )
-
-    functions_file = os.getenv(
-        "FUNCTIONS_FILE",
-        "functions.json",
-    )
-
-    # =========================================================
-    # Embedding service
-    # =========================================================
-
     print(
         "Loading embedding model..."
     )
 
-    embedding_service = EmbeddingService(
-        embedding_model
+    embedding_service = (
+        EmbeddingService(
+            embedding_model
+        )
     )
 
-    # =========================================================
+    # ---------------------------------------------------------
     # LLM
-    # =========================================================
+    # ---------------------------------------------------------
+
+    llm_model = os.getenv(
+        "HF_MODEL",
+        "Qwen/Qwen2.5-7B-Instruct",
+    )
 
     print(
         "Initializing LLM service..."
     )
 
-    llm_service = LLMService(
-        model=hf_model
+    llm_service = (
+        LLMService(
+            model=llm_model
+        )
     )
 
-    # =========================================================
+    # ---------------------------------------------------------
     # Neo4j
-    # =========================================================
+    # ---------------------------------------------------------
 
     print(
         "Connecting to Neo4j..."
     )
 
-    driver = create_neo4j_driver()
+    driver, database = (
+        create_neo4j_driver()
+    )
 
     try:
 
         # -----------------------------------------------------
-        # Verify connection
+        # Domain graph
         # -----------------------------------------------------
 
-        driver.verify_connectivity()
-
-        print(
-            "Neo4j connection established."
+        domain_client = (
+            Neo4jDomainGraph(
+                driver=driver,
+                database=database,
+                embedding_service=(
+                    embedding_service
+                ),
+                fulltext_index=os.getenv(
+                    "NEO4J_FULLTEXT_INDEX",
+                    "domainNodeSearch",
+                ),
+            )
         )
 
-        # =====================================================
-        # Domain graph
-        # =====================================================
-
-        domain_client = Neo4jDomainGraph(
-            driver=driver,
-            database=neo4j_database,
-            embedding_service=embedding_service,
-            fulltext_index=fulltext_index,
-        )
-
-        # =====================================================
+        # -----------------------------------------------------
         # Function matcher
-        # =====================================================
+        # -----------------------------------------------------
 
         print(
             "Loading registered functions..."
         )
 
-        function_matcher = FunctionMatcher(
-            embedding_model
+        function_matcher = (
+            FunctionMatcher(
+                embedding_model
+            )
+        )
+
+        functions_file = os.getenv(
+            "FUNCTIONS_FILE",
+            "functions.json",
         )
 
         function_matcher.load(
@@ -182,32 +194,42 @@ def main():
             f"registered functions."
         )
 
-        # =====================================================
+        # -----------------------------------------------------
         # Pipeline
-        # =====================================================
+        # -----------------------------------------------------
 
-        pipeline = WorkflowPipeline(
+        pipeline = (
+            WorkflowPipeline(
 
-            domain_client=domain_client,
+                domain_client=(
+                    domain_client
+                ),
 
-            embedding_service=embedding_service,
+                embedding_service=(
+                    embedding_service
+                ),
 
-            function_matcher=function_matcher,
+                function_matcher=(
+                    function_matcher
+                ),
 
-            llm_service=llm_service,
+                llm_service=(
+                    llm_service
+                ),
 
-            beam_width=3,
+                beam_width=3,
 
-            top_k=5,
+                top_k=5,
 
-            neighborhood_depth=1,
+                neighborhood_depth=1,
 
-            verbose=True,
+                verbose=True,
+            )
         )
 
-        # =====================================================
-        # Interactive prompt loop
-        # =====================================================
+        # -----------------------------------------------------
+        # Interactive loop
+        # -----------------------------------------------------
 
         print(
             "\n"
@@ -224,8 +246,14 @@ def main():
 
         print(
             "\nEnter a workflow prompt."
-            "\nType 'exit', 'quit', or 'q' to stop."
-            "\nType 'debug' to toggle pipeline debug output."
+        )
+
+        print(
+            "Type 'exit', 'quit', or 'q' to stop."
+        )
+
+        print(
+            "Type 'debug' to toggle debug logging."
         )
 
         verbose = True
@@ -255,7 +283,7 @@ def main():
                 break
 
             # -------------------------------------------------
-            # Empty prompt
+            # Empty input
             # -------------------------------------------------
 
             if not prompt:
@@ -290,7 +318,9 @@ def main():
 
                 verbose = not verbose
 
-                pipeline.verbose = verbose
+                pipeline.verbose = (
+                    verbose
+                )
 
                 print(
                     "Debug logging: "
@@ -304,7 +334,7 @@ def main():
                 continue
 
             # -------------------------------------------------
-            # Execute workflow
+            # Run workflow
             # -------------------------------------------------
 
             print(
@@ -313,14 +343,18 @@ def main():
 
             try:
 
-                workflow, debug = pipeline.run(
-                    prompt,
-                    workflow_name="Generated Workflow",
+                workflow, debug = (
+                    pipeline.run(
+                        prompt,
+                        workflow_name=(
+                            "Generated Workflow"
+                        ),
+                    )
                 )
 
-                # ---------------------------------------------
+                # -------------------------------------------------
                 # Final workflow
-                # ---------------------------------------------
+                # -------------------------------------------------
 
                 print(
                     "\n"
@@ -343,10 +377,7 @@ def main():
                     )
                 )
 
-            except Exception as exc:
-
-                # One bad prompt must NOT terminate the
-                # interactive application.
+            except Exception as error:
 
                 print(
                     "\n"
@@ -362,16 +393,14 @@ def main():
                 )
 
                 print(
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(error).__name__}: "
+                    f"{error}"
                 )
 
+                # Keep the application alive.
                 continue
 
     finally:
-
-        # =====================================================
-        # Close Neo4j
-        # =====================================================
 
         driver.close()
 

@@ -1,6 +1,8 @@
 """
 End-to-end workflow pipeline.
 
+Architecture:
+
     user prompt
         |
         v
@@ -25,19 +27,32 @@ End-to-end workflow pipeline.
         | Stage 10/11
         v
     Workflow JSON
+
+The domain graph is the semantic source of truth.
+
+No Dijkstra.
+No shortest-path routing.
 """
 
-from semantic_parser import HybridSemanticParser
+import json
+
+from semantic_parser import (
+    HybridSemanticParser,
+)
+
 from contextual_subgraph_builder import (
     build_contextual_subgraph,
 )
+
 from beam_search_planner import (
     BeamSearchPlanner,
 )
+
 from graph_planner import (
     GraphPlanner,
     PlanningError,
 )
+
 from workflow_generator import (
     WorkflowGenerator,
 )
@@ -122,19 +137,42 @@ class WorkflowPipeline:
         debug = {}
 
         # -----------------------------------------------------
-        # STAGE 1 / 2
-        # Semantic interpretation + LLM enrichment
+        # STAGE 0
+        #
+        # Load domain context for the LLM.
+        #
+        # IMPORTANT:
+        #
+        # The LLM can infer semantic concepts, but it should
+        # not hallucinate arbitrary domain concepts.
+        #
+        # The ontology gives it the vocabulary of the domain.
+        # -----------------------------------------------------
+
+        domain_context = (
+            self._build_domain_context()
+        )
+
+        # -----------------------------------------------------
+        # STAGE 1 / 2 / 11
+        # Semantic interpretation
         # -----------------------------------------------------
 
         interpretation = (
             self.parser.parse(
-                prompt
+                prompt,
+                domain_context=(
+                    domain_context
+                ),
             )
         )
 
         debug[
             "semantic_interpretation"
-        ] = interpretation.as_debug_dict()
+        ] = (
+            interpretation
+            .as_debug_dict()
+        )
 
         self._log(
             "STAGE 1/2 - Semantic Interpretation",
@@ -145,7 +183,8 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGES 3-7
-        # Candidate matching + contextual neighborhood
+        # Semantic + lexical matching
+        # + neighborhood expansion
         # -----------------------------------------------------
 
         (
@@ -201,7 +240,11 @@ class WorkflowPipeline:
 
         weighted_edges = []
 
-        for source, target, data in (
+        for (
+            source,
+            target,
+            data,
+        ) in (
             candidate_plan[
                 "domain_graph"
             ].edges(
@@ -217,10 +260,10 @@ class WorkflowPipeline:
                 }
             )
 
-        self._log(
-            "STAGE 7 - Weighted domain graph",
-            weighted_edges,
-        )
+        # self._log(
+        #     "STAGE 7 - Weighted domain graph",
+        #     weighted_edges,
+        # )
 
         # -----------------------------------------------------
         # STAGE 8
@@ -235,52 +278,75 @@ class WorkflowPipeline:
 
         debug[
             "beam_search"
-        ] = search_result[
-            "beam"
-        ]
+        ] = search_result.get(
+            "beam",
+            [],
+        )
 
         self._log(
             "STAGE 8 - Beam candidates",
-            search_result[
-                "beam"
-            ],
+            search_result.get(
+                "beam",
+                [],
+            ),
         )
 
         self._log(
             "STAGE 8 - Selected concepts",
             [
                 (
-                    item[
-                        "prompt_text"
-                    ],
+                    item.get(
+                        "prompt_text",
+                        "",
+                    ),
                     "->",
-                    item[
-                        "domain_node_name"
-                    ],
+                    item.get(
+                        "domain_node_name",
+                        "",
+                    ),
                     "source=",
                     item.get(
-                        "source"
+                        "source",
+                        "unknown",
                     ),
                 )
-                for item in search_result[
-                    "selection"
-                ]
+                for item in search_result.get(
+                    "selection",
+                    [],
+                )
             ],
         )
 
         # -----------------------------------------------------
-        # Stage 8 -> Stage 9
+        # Fail explicitly rather than generating an empty
+        # workflow.
+        # -----------------------------------------------------
+
+        if not search_result.get(
+            "selection"
+        ):
+
+            raise RuntimeError(
+                "Beam search produced no selected workflow nodes. "
+                "Stage 3 returned no usable domain candidates."
+            )
+
+        # -----------------------------------------------------
+        # STAGE 8 -> STAGE 9
         # -----------------------------------------------------
 
         workflow_graph = (
             self.beam_planner.expand(
-                search_result
+                search_result,
+                candidate_plan=(
+                    candidate_plan
+                ),
             )
         )
 
         # -----------------------------------------------------
         # STAGE 9
-        # Topological planning
+        # Graph planning
         # -----------------------------------------------------
 
         try:
@@ -305,7 +371,9 @@ class WorkflowPipeline:
         ] = [
             plan[
                 "graph"
-            ].nodes[node].get(
+            ].nodes[
+                node
+            ].get(
                 "name",
                 node,
             )
@@ -323,7 +391,7 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGE 10 / 11
-        # Function matching + workflow generation
+        # Function matching + generation
         # -----------------------------------------------------
 
         workflow = (
@@ -346,7 +414,50 @@ class WorkflowPipeline:
         )
 
     # =========================================================
-    # Debug logging
+    # Domain context for LLM
+    # =========================================================
+
+    def _build_domain_context(
+        self,
+    ):
+
+        try:
+
+            nodes = (
+                self.domain_client.all_nodes()
+            )
+
+        except Exception:
+
+            return []
+
+        context = []
+
+        for node in nodes:
+
+            context.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "type": node.node_type,
+                    "types": list(
+                        node.types or []
+                    ),
+                    "description": (
+                        node.description
+                        or ""
+                    ),
+                    "aliases": list(
+                        node.aliases
+                        or []
+                    ),
+                }
+            )
+
+        return context
+
+    # =========================================================
+    # Logging
     # =========================================================
 
     def _log(
@@ -357,8 +468,6 @@ class WorkflowPipeline:
 
         if not self.verbose:
             return
-
-        import json
 
         print(
             "\n"

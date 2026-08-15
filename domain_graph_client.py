@@ -1,40 +1,59 @@
 """
 Domain graph access layer.
 
-The domain graph is the source of truth for domain concepts and their
-relationships.
+Neo4j is the source of truth for the domain ontology.
 
-This module deliberately does NOT perform path finding or shortest-path
-routing.
+Responsibilities:
 
-Candidate retrieval uses:
+    1. Retrieve domain nodes from Neo4j.
+    2. Match prompt concepts against domain nodes using:
+           - semantic embedding similarity
+           - lexical similarity
+    3. Retrieve immediate graph neighborhoods.
+    4. Return the same contract for Neo4j and in-memory graphs.
 
-    lexical similarity
-        +
-    embedding similarity
+This module does NOT:
 
-The two implementations expose the same contract:
+    - perform workflow planning
+    - perform Dijkstra
+    - perform shortest-path routing
+    - choose registered implementation functions
+    - create workflow execution order
 
-    Neo4jDomainGraph
-    InMemoryDomainGraph
-
-Nothing downstream needs to know whether Neo4j is being used.
+The domain graph represents semantic/domain structure.
+The planner decides execution order later.
 """
 
 import abc
 import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+import re
 
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+# =============================================================
+# Domain models
+# =============================================================
 
 @dataclass
 class DomainNode:
     id: str
     name: str
     node_type: str
+
     description: str = ""
-    aliases: List[str] = field(default_factory=list)
-    embedding: Optional[list] = None
+
+    aliases: List[str] = field(
+        default_factory=list
+    )
+
+    embedding: Optional[Any] = None
+
+    # Preserve all ontology types from Neo4j.
+    types: List[str] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -47,10 +66,17 @@ class DomainRelationship:
 @dataclass
 class ScoredNode:
     node: DomainNode
+
     score: float
+
     lexical_score: float = 0.0
+
     semantic_score: float = 0.0
 
+
+# =============================================================
+# Interface
+# =============================================================
 
 class DomainGraphClient(abc.ABC):
 
@@ -63,8 +89,10 @@ class DomainGraphClient(abc.ABC):
         k=5,
     ) -> List[ScoredNode]:
         """
-        Return top-k domain concepts using lexical + semantic similarity.
+        Return the top-k semantically and lexically relevant
+        domain concepts.
         """
+        raise NotImplementedError
 
     @abc.abstractmethod
     def neighborhood(
@@ -73,29 +101,33 @@ class DomainGraphClient(abc.ABC):
         depth: int = 1,
     ) -> List[DomainRelationship]:
         """
-        Return relationships around a node.
+        Return ontology relationships around a node.
         """
+        raise NotImplementedError
 
     @abc.abstractmethod
     def get_node(
         self,
         node_id: str,
     ) -> Optional[DomainNode]:
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def all_nodes(self) -> List[DomainNode]:
         """
-        Return all domain nodes.
+        Return all ontology nodes.
 
-        Used to provide domain context to the semantic LLM.
+        Used for:
+
+            - semantic retrieval
+            - LLM domain context
         """
-        ...
+        raise NotImplementedError
 
 
-###############################################################
-# Neo4j
-###############################################################
+# =============================================================
+# Neo4j implementation
+# =============================================================
 
 class Neo4jDomainGraph(DomainGraphClient):
 
@@ -107,24 +139,82 @@ class Neo4jDomainGraph(DomainGraphClient):
         fulltext_index="domainNodeSearch",
     ):
         self.driver = driver
+
         self.database = database
-        self.embedding_service = embedding_service
-        self.fulltext_index = fulltext_index
+
+        self.embedding_service = (
+            embedding_service
+        )
+
+        # Kept for compatibility/configuration.
+
+        self.fulltext_index = (
+            fulltext_index
+        )
+
+        # -----------------------------------------------------
+        # In-memory embedding cache.
+        #
+        # Neo4j's current importer does not store embeddings.
+        # We therefore generate them once per process and cache
+        # them here.
+        # -----------------------------------------------------
+
+        self._embedding_cache = {}
+
+        # Cache complete domain nodes as well.
+        self._node_cache = None
+
+    # =========================================================
+    # Retrieve all nodes
+    # =========================================================
 
     def all_nodes(self) -> List[DomainNode]:
 
+        if self._node_cache is not None:
+            return list(
+                self._node_cache.values()
+            )
+
+        # The ontology importer creates :GraphNode.
+        #
+        # Use the label explicitly rather than MATCH (n),
+        # so unrelated Neo4j application data is not accidentally
+        # treated as domain ontology.
+
         cypher = """
-        MATCH (n)
+        MATCH (n:GraphNode)
         RETURN n
         """
 
-        with self.driver.session(database=self.database) as session:
-            rows = session.run(cypher)
+        with self.driver.session(
+            database=self.database
+        ) as session:
 
-            return [
-                self._to_domain_node(row["n"])
-                for row in rows
-            ]
+            rows = session.run(
+                cypher
+            )
+
+            nodes = {}
+
+            for row in rows:
+
+                node = self._to_domain_node(
+                    row["n"]
+                )
+
+                if node.id:
+                    nodes[node.id] = node
+
+            self._node_cache = nodes
+
+        return list(
+            self._node_cache.values()
+        )
+
+    # =========================================================
+    # Candidate retrieval
+    # =========================================================
 
     def candidate_nodes(
         self,
@@ -134,177 +224,121 @@ class Neo4jDomainGraph(DomainGraphClient):
         k=5,
     ) -> List[ScoredNode]:
 
-        # ---------------------------------------------------------
-        # Lexical candidates
-        # ---------------------------------------------------------
+        if not text:
+            return []
 
-        lexical_nodes = {}
+        requested_types = (
+            set(node_types)
+            if node_types
+            else None
+        )
 
-        try:
+        # -----------------------------------------------------
+        # Get ontology nodes.
+        # -----------------------------------------------------
 
-            cypher = f"""
-            CALL db.index.fulltext.queryNodes(
-                $index,
-                $text
-            )
-            YIELD node, score
+        all_nodes = self.all_nodes()
 
-            WHERE
-                $types IS NULL
-                OR any(
-                    label IN labels(node)
-                    WHERE label IN $types
-                )
+        results = []
 
-            RETURN node, score
-            ORDER BY score DESC
-            LIMIT $limit
-            """
-
-            with self.driver.session(
-                database=self.database
-            ) as session:
-
-                rows = session.run(
-                    cypher,
-                    index=self.fulltext_index,
-                    text=text,
-                    types=list(node_types)
-                    if node_types
-                    else None,
-                    limit=max(k * 3, 15),
-                )
-
-                for row in rows:
-
-                    node = self._to_domain_node(
-                        row["node"]
-                    )
-
-                    lexical_nodes[node.id] = (
-                        node,
-                        float(row["score"])
-                    )
-
-        except Exception:
-            # If the full-text index is unavailable, semantic retrieval
-            # below can still operate if embeddings exist.
-            lexical_nodes = {}
-
-        # ---------------------------------------------------------
-        # Semantic candidates
+        # -----------------------------------------------------
+        # Score every relevant domain node.
         #
         # IMPORTANT:
         #
-        # We do not restrict semantic retrieval to lexical results.
-        # That was one of the previous architectural bugs.
-        # ---------------------------------------------------------
+        # We intentionally do NOT first use full-text search
+        # and then calculate embeddings only on that subset.
+        #
+        # That architecture can miss semantically related
+        # concepts whose wording differs from the prompt.
+        # -----------------------------------------------------
 
-        semantic_candidates = []
+        for node in all_nodes:
 
-        if embedding is not None:
+            if (
+                requested_types
+                and not requested_types.intersection(
+                    set(node.types or [])
+                    | {node.node_type}
+                )
+            ):
+                continue
 
-            all_nodes = self.all_nodes()
+            # -------------------------------------------------
+            # Make sure the domain node has an embedding.
+            # -------------------------------------------------
 
-            for node in all_nodes:
+            node_embedding = (
+                self._get_or_create_embedding(
+                    node
+                )
+            )
 
+            semantic_score = (
+                _cosine_similarity(
+                    embedding,
+                    node_embedding,
+                )
                 if (
-                    node_types
-                    and node.node_type not in node_types
-                ):
-                    continue
-
-                if node.embedding is None:
-                    continue
-
-                semantic_score = _cosine(
-                    embedding,
-                    node.embedding,
+                    embedding is not None
+                    and node_embedding is not None
                 )
-
-                semantic_candidates.append(
-                    (
-                        node,
-                        semantic_score,
-                    )
-                )
-
-            semantic_candidates.sort(
-                key=lambda x: x[1],
-                reverse=True,
+                else 0.0
             )
 
-            semantic_candidates = semantic_candidates[
-                :max(k * 3, 15)
-            ]
-
-        # ---------------------------------------------------------
-        # Union candidates
-        # ---------------------------------------------------------
-
-        merged = {}
-
-        for node, lex_raw in lexical_nodes.values():
-
-            lexical_score = _normalize_lexical_score(
-                lex_raw
-            )
-
-            semantic_score = 0.0
-
-            if embedding is not None and node.embedding is not None:
-                semantic_score = _cosine(
-                    embedding,
-                    node.embedding,
-                )
-
-            merged[node.id] = ScoredNode(
-                node=node,
-                score=_combined_score(
-                    lexical_score,
-                    semantic_score,
-                ),
-                lexical_score=lexical_score,
-                semantic_score=semantic_score,
-            )
-
-        for node, semantic_score in semantic_candidates:
-
-            existing = merged.get(node.id)
+            # -------------------------------------------------
+            # Lexical similarity.
+            #
+            # Compare against:
+            #
+            #   name
+            #   aliases
+            #   description
+            #   id
+            #   ontology types
+            # -------------------------------------------------
 
             lexical_score = (
-                existing.lexical_score
-                if existing
-                else _lexical_similarity(
+                _lexical_similarity(
                     text,
-                    node.name,
-                    node.aliases,
-                    node.description,
+                    node,
                 )
             )
 
-            combined = _combined_score(
-                lexical_score,
-                semantic_score,
+            # -------------------------------------------------
+            # Combined score.
+            #
+            # Semantic similarity dominates.
+            # Lexical similarity helps exact terminology.
+            # -------------------------------------------------
+
+            score = (
+                0.70 * semantic_score
+                + 0.30 * lexical_score
             )
 
-            if existing is None or combined > existing.score:
+            if score <= 0.0:
+                continue
 
-                merged[node.id] = ScoredNode(
+            results.append(
+                ScoredNode(
                     node=node,
-                    score=combined,
+                    score=score,
                     lexical_score=lexical_score,
                     semantic_score=semantic_score,
                 )
-
-        results = list(merged.values())
+            )
 
         results.sort(
-            key=lambda x: x.score,
+            key=lambda item: item.score,
             reverse=True,
         )
 
         return results[:k]
+
+    # =========================================================
+    # Neighborhood
+    # =========================================================
 
     def neighborhood(
         self,
@@ -312,10 +346,22 @@ class Neo4jDomainGraph(DomainGraphClient):
         depth=1,
     ) -> List[DomainRelationship]:
 
-        depth = max(1, int(depth))
+        depth = max(
+            1,
+            int(depth),
+        )
+
+        # The ontology importer creates GraphNode nodes.
+        #
+        # We preserve relationship direction, while allowing
+        # neighborhood traversal to discover both incoming and
+        # outgoing relationships.
 
         cypher = f"""
-        MATCH (n {{id: $id}})-[r*1..{depth}]-(m)
+        MATCH (n:GraphNode {{id: $id}})
+              -[r*1..{depth}]-
+              (m:GraphNode)
+
         UNWIND r AS rel
 
         RETURN DISTINCT
@@ -333,22 +379,67 @@ class Neo4jDomainGraph(DomainGraphClient):
                 id=node_id,
             )
 
-            return [
-                DomainRelationship(
-                    row["source_id"],
-                    row["target_id"],
-                    row["relation"],
+            relationships = []
+
+            seen = set()
+
+            for row in rows:
+
+                source_id = row[
+                    "source_id"
+                ]
+
+                target_id = row[
+                    "target_id"
+                ]
+
+                relation = row[
+                    "relation"
+                ]
+
+                key = (
+                    source_id,
+                    relation,
+                    target_id,
                 )
-                for row in rows
-            ]
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+
+                relationships.append(
+                    DomainRelationship(
+                        source_id=source_id,
+                        target_id=target_id,
+                        relation=relation,
+                    )
+                )
+
+            return relationships
+
+    # =========================================================
+    # Get one node
+    # =========================================================
 
     def get_node(
         self,
         node_id,
     ) -> Optional[DomainNode]:
 
+        # First check cache.
+
+        if self._node_cache is not None:
+
+            cached = self._node_cache.get(
+                node_id
+            )
+
+            if cached is not None:
+                return cached
+
         cypher = """
-        MATCH (n {id: $id})
+        MATCH (n:GraphNode {id: $id})
         RETURN n
         LIMIT 1
         """
@@ -365,69 +456,227 @@ class Neo4jDomainGraph(DomainGraphClient):
             if not row:
                 return None
 
-            return self._to_domain_node(
+            node = self._to_domain_node(
                 row["n"]
             )
 
+            if self._node_cache is None:
+                self._node_cache = {}
+
+            self._node_cache[
+                node.id
+            ] = node
+
+            return node
+
+    # =========================================================
+    # Embedding handling
+    # =========================================================
+
+    def _get_or_create_embedding(
+        self,
+        node: DomainNode,
+    ):
+        """
+        Return the node embedding.
+
+        Priority:
+
+            1. Existing Neo4j embedding.
+            2. In-memory cache.
+            3. Generate embedding from ontology text.
+
+        The current ontology importer does not store embeddings,
+        so #3 is expected for the current repository.
+        """
+
+        if _has_embedding(
+            node.embedding
+        ):
+            return node.embedding
+
+        cached = self._embedding_cache.get(
+            node.id
+        )
+
+        if _has_embedding(cached):
+
+            node.embedding = cached
+
+            return cached
+
+        if self.embedding_service is None:
+            return None
+
+        text = _domain_node_text(
+            node
+        )
+
+        if not text:
+            return None
+
+        embedding = (
+            self.embedding_service.encode(
+                text
+            )
+        )
+
+        self._embedding_cache[
+            node.id
+        ] = embedding
+
+        node.embedding = embedding
+
+        return embedding
+
+    # =========================================================
+    # Neo4j -> DomainNode
+    # =========================================================
+
     @staticmethod
-    def _to_domain_node(neo4j_node):
+    def _to_domain_node(
+        neo4j_node,
+    ) -> DomainNode:
 
-        props = dict(neo4j_node)
+        props = dict(
+            neo4j_node
+        )
 
-        labels = (
-            list(neo4j_node.labels)
-            if hasattr(neo4j_node, "labels")
-            else []
+        labels = list(
+            neo4j_node.labels
+        ) if hasattr(
+            neo4j_node,
+            "labels",
+        ) else []
+
+        raw_types = (
+            props.get(
+                "types",
+                [],
+            )
+            or []
+        )
+
+        if isinstance(
+            raw_types,
+            str,
+        ):
+            raw_types = [
+                raw_types
+            ]
+
+        types = list(
+            dict.fromkeys(
+                [
+                    *raw_types,
+                    *[
+                        label
+                        for label in labels
+                        if label
+                        != "GraphNode"
+                    ],
+                ]
+            )
+        )
+
+        # Prefer ontology type rather than blindly using the
+        # first Neo4j label.
+
+        node_type = (
+            types[0]
+            if types
+            else props.get(
+                "type",
+                "DomainEntity",
+            )
+        )
+
+        aliases = (
+            props.get(
+                "aliases",
+                [],
+            )
+            or []
+        )
+
+        if isinstance(
+            aliases,
+            str,
+        ):
+            aliases = [
+                aliases
+            ]
+
+        embedding = props.get(
+            "embedding"
         )
 
         return DomainNode(
-            id=props.get("id"),
-            name=props.get(
-                "name",
-                props.get("id"),
-            ),
-            node_type=(
-                labels[0]
-                if labels
-                else props.get(
-                    "type",
-                    "Operation",
+            id=str(
+                props.get(
+                    "id"
                 )
             ),
-            description=props.get(
-                "description",
-                "",
+            name=str(
+                props.get(
+                    "name",
+                    props.get(
+                        "id",
+                        "",
+                    ),
+                )
             ),
-            aliases=props.get(
-                "aliases",
-                [],
-            ) or [],
-            embedding=props.get(
-                "embedding"
+            node_type=node_type,
+            description=str(
+                props.get(
+                    "description",
+                    "",
+                )
+                or ""
             ),
+            aliases=list(
+                aliases
+            ),
+            embedding=embedding,
+            types=types,
         )
 
 
-###############################################################
+# =============================================================
 # In-memory implementation
-###############################################################
+# =============================================================
 
-class InMemoryDomainGraph(DomainGraphClient):
+class InMemoryDomainGraph(
+    DomainGraphClient
+):
 
     def __init__(
         self,
-        nodes: Dict[str, DomainNode],
-        relationships: List[DomainRelationship],
+        nodes: Dict[
+            str,
+            DomainNode
+        ],
+        relationships: List[
+            DomainRelationship
+        ],
         embedding_service=None,
     ):
 
         self.nodes = nodes
-        self.relationships = relationships
-        self.embedding_service = embedding_service
+
+        self.relationships = (
+            relationships
+        )
+
+        self.embedding_service = (
+            embedding_service
+        )
 
         self._adjacency = {}
 
-        for relationship in relationships:
+        for relationship in (
+            relationships
+        ):
 
             self._adjacency.setdefault(
                 relationship.source_id,
@@ -443,26 +692,22 @@ class InMemoryDomainGraph(DomainGraphClient):
                 relationship
             )
 
-        # -----------------------------------------------------
-        # Generate embeddings for demo/local nodes.
-        #
-        # This is critical. Previously the demo nodes had no
-        # embeddings, which meant semantic matching silently
-        # degraded to lexical matching.
-        # -----------------------------------------------------
+        # Generate missing embeddings.
 
-        if embedding_service is not None:
+        if embedding_service:
 
             for node in self.nodes.values():
 
-                if node.embedding is None:
+                if not _has_embedding(
+                    node.embedding
+                ):
 
-                    node_text = _node_text(
-                        node
-                    )
-
-                    node.embedding = embedding_service.encode(
-                        node_text
+                    node.embedding = (
+                        embedding_service.encode(
+                            _domain_node_text(
+                                node
+                            )
+                        )
                     )
 
     def all_nodes(self):
@@ -479,53 +724,65 @@ class InMemoryDomainGraph(DomainGraphClient):
         k=5,
     ):
 
+        requested_types = (
+            set(node_types)
+            if node_types
+            else None
+        )
+
         results = []
 
-        for node in self.nodes.values():
+        for node in (
+            self.nodes.values()
+        ):
 
             if (
-                node_types
-                and node.node_type not in node_types
+                requested_types
+                and not requested_types.intersection(
+                    set(node.types or [])
+                    | {node.node_type}
+                )
             ):
                 continue
 
-            lexical_score = _lexical_similarity(
-                text,
-                node.name,
-                node.aliases,
-                node.description,
-            )
-
-            semantic_score = 0.0
-
-            if (
-                embedding is not None
-                and node.embedding is not None
-            ):
-
-                semantic_score = _cosine(
+            semantic_score = (
+                _cosine_similarity(
                     embedding,
                     node.embedding,
                 )
-
-            score = _combined_score(
-                lexical_score,
-                semantic_score,
+                if (
+                    embedding is not None
+                    and node.embedding is not None
+                )
+                else 0.0
             )
 
-            if score > 0:
-
-                results.append(
-                    ScoredNode(
-                        node=node,
-                        score=score,
-                        lexical_score=lexical_score,
-                        semantic_score=semantic_score,
-                    )
+            lexical_score = (
+                _lexical_similarity(
+                    text,
+                    node,
                 )
+            )
+
+            score = (
+                0.70 * semantic_score
+                + 0.30 * lexical_score
+            )
+
+            if score <= 0:
+                continue
+
+            results.append(
+                ScoredNode(
+                    node=node,
+                    score=score,
+                    lexical_score=lexical_score,
+                    semantic_score=semantic_score,
+                )
+            )
 
         results.sort(
-            key=lambda x: x.score,
+            key=lambda item: item.score,
             reverse=True,
         )
 
@@ -537,7 +794,10 @@ class InMemoryDomainGraph(DomainGraphClient):
         depth=1,
     ):
 
-        depth = max(1, int(depth))
+        depth = max(
+            1,
+            int(depth),
+        )
 
         visited = {
             node_id
@@ -555,9 +815,11 @@ class InMemoryDomainGraph(DomainGraphClient):
 
             for current in frontier:
 
-                for relationship in self._adjacency.get(
-                    current,
-                    [],
+                for relationship in (
+                    self._adjacency.get(
+                        current,
+                        [],
+                    )
                 ):
 
                     collected.append(
@@ -566,13 +828,19 @@ class InMemoryDomainGraph(DomainGraphClient):
 
                     other = (
                         relationship.target_id
-                        if relationship.source_id == current
-                        else relationship.source_id
+                        if (
+                            relationship.source_id
+                            == current
+                        )
+                        else
+                        relationship.source_id
                     )
 
                     if other not in visited:
 
-                        visited.add(other)
+                        visited.add(
+                            other
+                        )
 
                         next_frontier.add(
                             other
@@ -591,13 +859,14 @@ class InMemoryDomainGraph(DomainGraphClient):
                 relationship.target_id,
             )
 
-            if key not in seen:
+            if key in seen:
+                continue
 
-                seen.add(key)
+            seen.add(key)
 
-                result.append(
-                    relationship
-                )
+            result.append(
+                relationship
+            )
 
         return result
 
@@ -611,90 +880,131 @@ class InMemoryDomainGraph(DomainGraphClient):
         )
 
 
-###############################################################
+# =============================================================
 # Similarity helpers
-###############################################################
+# =============================================================
 
-def _node_text(node):
+def _has_embedding(
+    value,
+):
+    """
+    Safe check for lists, tuples and numpy arrays.
+
+    Never use:
+
+        if embedding:
+
+    because numpy arrays raise:
+
+        ValueError:
+        truth value of an array is ambiguous.
+    """
+
+    if value is None:
+        return False
+
+    try:
+        return len(value) > 0
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
+def _domain_node_text(
+    node,
+):
 
     parts = [
-        node.name,
-        node.description,
+        node.name or "",
+        node.description or "",
+        node.id or "",
     ]
 
     parts.extend(
         node.aliases or []
     )
 
+    parts.extend(
+        node.types or []
+    )
+
     return " ".join(
-        p for p in parts
-        if p
+        part
+        for part in parts
+        if part
     )
 
 
-def _cosine(a, b):
+def _normalize_text(
+    text,
+):
 
-    if a is None or b is None:
-        return 0.0
+    text = str(
+        text or ""
+    ).lower()
 
-    try:
+    text = text.replace(
+        "_",
+        " ",
+    )
 
-        dot = sum(
-            x * y
-            for x, y in zip(a, b)
-        )
+    text = text.replace(
+        "-",
+        " ",
+    )
 
-        na = math.sqrt(
-            sum(x * x for x in a)
-        )
+    text = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        text,
+    )
 
-        nb = math.sqrt(
-            sum(x * x for x in b)
-        )
+    return " ".join(
+        text.split()
+    )
 
-        if na == 0 or nb == 0:
-            return 0.0
 
-        return dot / (
-            na * nb
-        )
+def _token_set(
+    text,
+):
 
-    except Exception:
-
-        return 0.0
+    return set(
+        _normalize_text(
+            text
+        ).split()
+    )
 
 
 def _lexical_similarity(
     query,
-    name,
-    aliases=None,
-    description="",
+    node: DomainNode,
 ):
 
-    aliases = aliases or []
-
-    query_tokens = set(
-        _tokens(query)
+    query_tokens = _token_set(
+        query
     )
 
     if not query_tokens:
         return 0.0
 
     candidates = [
-        name,
-        description,
-        *aliases,
+        node.name,
+        node.id,
+        node.description,
+        *(node.aliases or []),
+        *(node.types or []),
     ]
 
     best = 0.0
 
     for candidate in candidates:
 
-        if not candidate:
-            continue
-
-        candidate_tokens = set(
-            _tokens(candidate)
+        candidate_tokens = (
+            _token_set(
+                candidate
+            )
         )
 
         if not candidate_tokens:
@@ -710,6 +1020,9 @@ def _lexical_similarity(
             | candidate_tokens
         )
 
+        if not union:
+            continue
+
         score = (
             len(intersection)
             / len(union)
@@ -723,38 +1036,79 @@ def _lexical_similarity(
     return best
 
 
-def _tokens(text):
-
-    return [
-        token
-        for token in (
-            text.lower()
-            .replace("-", " ")
-            .replace("_", " ")
-            .split()
-        )
-        if token
-    ]
-
-
-def _normalize_lexical_score(score):
-
-    # Neo4j full-text scores are not guaranteed to be
-    # normalized. Keep them in a useful 0..1 range.
-    return min(
-        max(float(score), 0.0) / 10.0,
-        1.0,
-    )
-
-
-def _combined_score(
-    lexical_score,
-    semantic_score,
+def _cosine_similarity(
+    a,
+    b,
 ):
 
-    # Embeddings are primary.
-    # Lexical matching rescues exact terminology.
-    return (
-        0.70 * max(0.0, semantic_score)
-        + 0.30 * max(0.0, lexical_score)
-    )
+    if (
+        a is None
+        or b is None
+    ):
+        return 0.0
+
+    try:
+
+        values_a = list(a)
+        values_b = list(b)
+
+        if not values_a or not values_b:
+            return 0.0
+
+        if len(values_a) != len(
+            values_b
+        ):
+            return 0.0
+
+        dot = sum(
+            x * y
+            for x, y in zip(
+                values_a,
+                values_b,
+            )
+        )
+
+        norm_a = math.sqrt(
+            sum(
+                x * x
+                for x in values_a
+            )
+        )
+
+        norm_b = math.sqrt(
+            sum(
+                y * y
+                for y in values_b
+            )
+        )
+
+        if (
+            norm_a == 0
+            or norm_b == 0
+        ):
+            return 0.0
+
+        cosine = (
+            dot
+            / (
+                norm_a
+                * norm_b
+            )
+        )
+
+        # Convert [-1, 1] to [0, 1].
+        return max(
+            0.0,
+            min(
+                1.0,
+                (cosine + 1.0)
+                / 2.0,
+            ),
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+    ):
+        return 0.0
