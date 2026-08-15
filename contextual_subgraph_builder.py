@@ -27,6 +27,25 @@ from relationship_semantics import (
     semantics_for,
 )
 
+def _has_embedding(value):
+    """
+    Safely determine whether an embedding exists.
+
+    Supports:
+      - None
+      - Python lists
+      - tuples
+      - numpy arrays
+      - other array-like objects
+    """
+    if value is None:
+        return False
+
+    try:
+        return len(value) > 0
+    except TypeError:
+        return False
+
 
 def build_contextual_subgraph(
     interpretation,
@@ -499,46 +518,82 @@ def build_contextual_subgraph(
 # =============================================================
 
 
-def _add_domain_node(
-    graph,
-    node,
-    candidate=None,
-):
+def _add_domain_node(graph, node, source=None, score=None):
     """
-    Add/update a domain node WITHOUT storing prompt-specific
-    candidate state on the node.
+    Add a domain node to the contextual graph.
+
+    The node keeps its ontology identity and embedding so that later
+    semantic matching can operate on the actual domain representation.
     """
 
-    if node.id not in graph:
+    if node is None:
+        return
 
-        graph.add_node(
-            node.id,
-            name=node.name,
-            node_type=node.node_type,
-            description=node.description,
-            aliases=list(
-                node.aliases or []
-            ),
-            embedding=node.embedding,
-        )
+    node_id = node.id
 
-    else:
+    data = {
+        "name": node.name,
+        "node_type": node.node_type,
+        "description": node.description,
+        "aliases": list(node.aliases or []),
+        "embedding": node.embedding,
+    }
 
-        data = graph.nodes[node.id]
+    if score is not None:
+        data["semantic_score"] = score
 
-        if not data.get("name"):
-            data["name"] = node.name
+    if source is not None:
+        data["source"] = source
 
-        if not data.get("description"):
-            data["description"] = (
-                node.description
-            )
+    embedding = data.get("embedding")
 
-        if not data.get("embedding"):
-            data["embedding"] = (
-                node.embedding
-            )
+    # IMPORTANT:
+    # Do not use:
+    #
+    #     if not embedding:
+    #
+    # because embeddings may be numpy arrays.
+    #
+    # A numpy array with multiple values cannot be evaluated
+    # directly as a boolean.
+    if not _has_embedding(embedding):
+        data["embedding"] = None
 
+    if graph.has_node(node_id):
+        existing = graph.nodes[node_id]
+
+        # Preserve the strongest semantic score.
+        if score is not None:
+            existing_score = existing.get("semantic_score")
+
+            if (
+                existing_score is None
+                or score > existing_score
+            ):
+                existing["semantic_score"] = score
+
+        # Preserve embedding if the existing node does not have one.
+        if (
+            not _has_embedding(existing.get("embedding"))
+            and _has_embedding(data.get("embedding"))
+        ):
+            existing["embedding"] = data["embedding"]
+
+        # Preserve source information.
+        if source is not None:
+            sources = existing.setdefault("sources", [])
+
+            if source not in sources:
+                sources.append(source)
+
+        return
+
+    data["sources"] = []
+
+    if source is not None:
+        data["sources"].append(source)
+
+    graph.add_node(node_id, **data)
 
 def _node_text(node):
     parts = [
@@ -760,3 +815,4 @@ def _best_candidate_for_text(
                 ]
 
     return best
+
