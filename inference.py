@@ -3,250 +3,99 @@ Command-line entry point.
 
 Examples:
 
-    python inference.py "transfer funds"
+    python inference.py
 
-    python inference.py "check balance, then transfer funds"
+Then enter prompts interactively:
+
+    transfer funds
+
+    check balance, then transfer funds
+
+    I want to send $500 to another account. Make sure
+    the request is valid and that I have enough funds first.
 
 The command-line layer is intentionally thin.
 
 All workflow reasoning happens inside WorkflowPipeline.
+
+The domain ontology is loaded from Neo4j. The in-memory graph
+is NOT used here because Neo4j is the source of truth.
 """
 
 import json
 import os
-import sys
+
+from neo4j import GraphDatabase
 
 from pipeline import WorkflowPipeline
-
 from llm_service import LLMService
-
-from domain_graph_client import (
-    InMemoryDomainGraph,
-    DomainNode,
-    DomainRelationship,
-)
-
+from domain_graph_client import Neo4jDomainGraph
 from utils import EmbeddingService
-
 from function_matcher import FunctionMatcher
 
 
-def build_domain_graph(
-    embedding_service,
-):
+def create_neo4j_driver():
     """
-    Local/demo domain ontology.
+    Create the Neo4j driver.
 
-    Replace this with Neo4jDomainGraph when connecting
-    to the real ontology.
+    Local development configuration.
     """
 
-    nodes = {
+    uri = os.getenv(
+        "NEO4J_URI",
+        "bolt://localhost:7687",
+    )
 
-        "validate_transfer":
-            DomainNode(
-                id="validate_transfer",
-                name="Validate Transfer Request",
-                node_type="Operation",
-                description=(
-                    "Validate the transfer request "
-                    "before processing."
-                ),
-                aliases=[
-                    "validate transfer",
-                    "validate request",
-                    "verify transfer request",
-                ],
-            ),
+    username = os.getenv(
+        "NEO4J_USER",
+        "neo4j",
+    )
 
-        "check_balance":
-            DomainNode(
-                id="check_balance",
-                name="Check Balance",
-                node_type="Operation",
-                description=(
-                    "Check the available account balance "
-                    "before transferring funds."
-                ),
-                aliases=[
-                    "check account balance",
-                    "verify balance",
-                    "check available funds",
-                ],
-            ),
+    # Temporary hardcoded password for local development.
+    # Move this to an environment variable before committing.
+    password = "helloworld"
 
-        "process_transfer":
-            DomainNode(
-                id="process_transfer",
-                name="Process Transfer",
-                node_type="Operation",
-                description=(
-                    "Process and execute a funds transfer."
-                ),
-                aliases=[
-                    "execute transfer",
-                    "process funds transfer",
-                    "execute funds transfer",
-                ],
-            ),
+    print(
+        f"Neo4j URI: {uri}"
+    )
 
-        "generate_transfer_response":
-            DomainNode(
-                id="generate_transfer_response",
-                name="Generate Transfer Response",
-                node_type="Operation",
-                description=(
-                    "Generate the result of the transfer "
-                    "operation."
-                ),
-                aliases=[
-                    "transfer response",
-                    "return transfer result",
-                    "generate response",
-                ],
-            ),
+    print(
+        f"Neo4j user: {username}"
+    )
 
-        "transfer_funds":
-            DomainNode(
-                id="transfer_funds",
-                name="Transfer Funds",
-                node_type="Operation",
-                description=(
-                    "Transfer funds from one account "
-                    "to another account."
-                ),
-                aliases=[
-                    "fund transfer",
-                    "move money",
-                    "send funds",
-                ],
-            ),
-    }
-
-    relationships = [
-
-        DomainRelationship(
-            "validate_transfer",
-            "check_balance",
-            "OPERATION_PRECEDES",
+    return GraphDatabase.driver(
+        uri,
+        auth=(
+            username,
+            password,
         ),
-
-        DomainRelationship(
-            "validate_transfer",
-            "check_balance",
-            "OPERATION_REQUIRES",
-        ),
-
-        DomainRelationship(
-            "check_balance",
-            "process_transfer",
-            "OPERATION_PRECEDES",
-        ),
-
-        DomainRelationship(
-            "process_transfer",
-            "generate_transfer_response",
-            "OPERATION_PRECEDES",
-        ),
-
-        DomainRelationship(
-            "validate_transfer",
-            "transfer_funds",
-            "OPERATION_REQUIRES",
-        ),
-
-        DomainRelationship(
-            "transfer_funds",
-            "process_transfer",
-            "OPERATION_PRECEDES",
-        ),
-
-        DomainRelationship(
-            "transfer_funds",
-            "generate_transfer_response",
-            "OPERATION_PRODUCES",
-        ),
-    ]
-
-    return InMemoryDomainGraph(
-        nodes,
-        relationships,
-        embedding_service=embedding_service,
     )
 
 
 def main():
 
-    # ---------------------------------------------------------
-    # Prompt
-    # ---------------------------------------------------------
-
-    if len(sys.argv) > 1:
-
-        prompt = " ".join(
-            sys.argv[1:]
-        )
-
-    else:
-
-        prompt = input(
-            "Enter workflow prompt: "
-        ).strip()
-
-    if not prompt:
-
-        print(
-            "No prompt supplied."
-        )
-
-        return
-
-    print(
-        f"\nUser prompt:\n{prompt}\n"
-    )
-
-    # ---------------------------------------------------------
-    # Embedding model
-    # ---------------------------------------------------------
+    # =========================================================
+    # Configuration
+    # =========================================================
 
     embedding_model = os.getenv(
         "EMBEDDING_MODEL",
         "sentence-transformers/all-MiniLM-L6-v2",
     )
 
-    embedding_service = (
-        EmbeddingService(
-            embedding_model
-        )
+    hf_model = os.getenv(
+        "HF_MODEL",
+        "Qwen/Qwen2.5-7B-Instruct",
     )
 
-    # ---------------------------------------------------------
-    # LLM
-    # ---------------------------------------------------------
-
-    llm_service = LLMService(
-        model=os.getenv(
-            "HF_MODEL",
-            "Qwen/Qwen2.5-7B-Instruct",
-        )
+    neo4j_database = os.getenv(
+        "NEO4J_DATABASE",
+        "neo4j",
     )
 
-    # ---------------------------------------------------------
-    # Domain graph
-    # ---------------------------------------------------------
-
-    domain_client = build_domain_graph(
-        embedding_service
-    )
-
-    # ---------------------------------------------------------
-    # Function matcher
-    # ---------------------------------------------------------
-
-    function_matcher = (
-        FunctionMatcher(
-            embedding_model
-        )
+    fulltext_index = os.getenv(
+        "NEO4J_FULLTEXT_INDEX",
+        "domainNodeSearch",
     )
 
     functions_file = os.getenv(
@@ -254,66 +103,281 @@ def main():
         "functions.json",
     )
 
-    function_matcher.load(
-        functions_file
-    )
-
-    # ---------------------------------------------------------
-    # Pipeline
-    # ---------------------------------------------------------
-
-    pipeline = WorkflowPipeline(
-
-        domain_client=domain_client,
-
-        embedding_service=embedding_service,
-
-        function_matcher=function_matcher,
-
-        llm_service=llm_service,
-
-        beam_width=3,
-
-        top_k=5,
-
-        neighborhood_depth=1,
-
-        verbose=True,
-    )
-
-    # ---------------------------------------------------------
-    # Execute
-    # ---------------------------------------------------------
-
-    workflow, debug = pipeline.run(
-        prompt,
-        workflow_name="Generated Workflow",
-    )
-
-    # ---------------------------------------------------------
-    # Final result
-    # ---------------------------------------------------------
+    # =========================================================
+    # Embedding service
+    # =========================================================
 
     print(
-        "\n"
-        + "=" * 70
+        "Loading embedding model..."
     )
 
-    print(
-        "FINAL WORKFLOW"
+    embedding_service = EmbeddingService(
+        embedding_model
     )
 
-    print(
-        "=" * 70
-    )
+    # =========================================================
+    # LLM
+    # =========================================================
 
     print(
-        json.dumps(
-            workflow,
-            indent=2,
-            default=str,
+        "Initializing LLM service..."
+    )
+
+    llm_service = LLMService(
+        model=hf_model
+    )
+
+    # =========================================================
+    # Neo4j
+    # =========================================================
+
+    print(
+        "Connecting to Neo4j..."
+    )
+
+    driver = create_neo4j_driver()
+
+    try:
+
+        # -----------------------------------------------------
+        # Verify connection
+        # -----------------------------------------------------
+
+        driver.verify_connectivity()
+
+        print(
+            "Neo4j connection established."
         )
-    )
+
+        # =====================================================
+        # Domain graph
+        # =====================================================
+
+        domain_client = Neo4jDomainGraph(
+            driver=driver,
+            database=neo4j_database,
+            embedding_service=embedding_service,
+            fulltext_index=fulltext_index,
+        )
+
+        # =====================================================
+        # Function matcher
+        # =====================================================
+
+        print(
+            "Loading registered functions..."
+        )
+
+        function_matcher = FunctionMatcher(
+            embedding_model
+        )
+
+        function_matcher.load(
+            functions_file
+        )
+
+        print(
+            f"Loaded "
+            f"{len(function_matcher.functions)} "
+            f"registered functions."
+        )
+
+        # =====================================================
+        # Pipeline
+        # =====================================================
+
+        pipeline = WorkflowPipeline(
+
+            domain_client=domain_client,
+
+            embedding_service=embedding_service,
+
+            function_matcher=function_matcher,
+
+            llm_service=llm_service,
+
+            beam_width=3,
+
+            top_k=5,
+
+            neighborhood_depth=1,
+
+            verbose=True,
+        )
+
+        # =====================================================
+        # Interactive prompt loop
+        # =====================================================
+
+        print(
+            "\n"
+            + "=" * 70
+        )
+
+        print(
+            "WORKFLOW ENGINE"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            "\nEnter a workflow prompt."
+            "\nType 'exit', 'quit', or 'q' to stop."
+            "\nType 'debug' to toggle pipeline debug output."
+        )
+
+        verbose = True
+
+        while True:
+
+            print(
+                "\n"
+                + "-" * 70
+            )
+
+            try:
+
+                prompt = input(
+                    "Enter workflow prompt: "
+                ).strip()
+
+            except (
+                KeyboardInterrupt,
+                EOFError,
+            ):
+
+                print(
+                    "\nExiting Workflow Engine."
+                )
+
+                break
+
+            # -------------------------------------------------
+            # Empty prompt
+            # -------------------------------------------------
+
+            if not prompt:
+
+                print(
+                    "Please enter a workflow prompt."
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # Exit
+            # -------------------------------------------------
+
+            if prompt.lower() in {
+                "exit",
+                "quit",
+                "q",
+            }:
+
+                print(
+                    "Exiting Workflow Engine."
+                )
+
+                break
+
+            # -------------------------------------------------
+            # Toggle debug
+            # -------------------------------------------------
+
+            if prompt.lower() == "debug":
+
+                verbose = not verbose
+
+                pipeline.verbose = verbose
+
+                print(
+                    "Debug logging: "
+                    + (
+                        "ON"
+                        if verbose
+                        else "OFF"
+                    )
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # Execute workflow
+            # -------------------------------------------------
+
+            print(
+                f"\nUser prompt:\n{prompt}\n"
+            )
+
+            try:
+
+                workflow, debug = pipeline.run(
+                    prompt,
+                    workflow_name="Generated Workflow",
+                )
+
+                # ---------------------------------------------
+                # Final workflow
+                # ---------------------------------------------
+
+                print(
+                    "\n"
+                    + "=" * 70
+                )
+
+                print(
+                    "FINAL WORKFLOW"
+                )
+
+                print(
+                    "=" * 70
+                )
+
+                print(
+                    json.dumps(
+                        workflow,
+                        indent=2,
+                        default=str,
+                    )
+                )
+
+            except Exception as exc:
+
+                # One bad prompt must NOT terminate the
+                # interactive application.
+
+                print(
+                    "\n"
+                    + "=" * 70
+                )
+
+                print(
+                    "WORKFLOW GENERATION FAILED"
+                )
+
+                print(
+                    "=" * 70
+                )
+
+                print(
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                continue
+
+    finally:
+
+        # =====================================================
+        # Close Neo4j
+        # =====================================================
+
+        driver.close()
+
+        print(
+            "\nNeo4j connection closed."
+        )
 
 
 if __name__ == "__main__":

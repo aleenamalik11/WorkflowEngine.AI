@@ -129,18 +129,35 @@ class Neo4jDomainGraph:
     that :class:`GraphMatcher` and the planners keep working unchanged.
     """
 
-    def __init__(self,
-                 embedding_service,
-                 uri=None,
-                 user=None,
-                 password=None,
-                 database=None):
-
+    def __init__(
+            self,
+            embedding_service,
+            driver=None,
+            database="neo4j",
+            fulltext_index="domainNodeSearch",
+            uri=None,
+            user=None,
+            password=None,
+    ):
         self.embedding_service = embedding_service
-        self.uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-        self.user = os.environ.get("NEO4J_USER", "neo4j")
-        self.password = "helloworld"
-        self.database = "neo4j"
+
+        self.driver = driver
+
+        self.database = database
+
+        self.fulltext_index = fulltext_index
+
+        self.uri = uri or os.environ.get(
+            "NEO4J_URI",
+            "bolt://localhost:7687",
+        )
+
+        self.user = user or os.environ.get(
+            "NEO4J_USER",
+            "neo4j",
+        )
+
+        self.password = password
 
     ###############################################################
     # Fetch
@@ -148,6 +165,7 @@ class Neo4jDomainGraph:
 
     def fetch(self):
         """Read every node and relationship from Neo4j."""
+
         try:
             from neo4j import GraphDatabase
         except ImportError as error:
@@ -156,21 +174,55 @@ class Neo4jDomainGraph:
                 "python -m pip install neo4j"
             ) from error
 
-        driver = GraphDatabase.driver(
-            self.uri,
-            auth=(self.user, self.password),
-        )
+        if self.driver is None:
+
+            if not self.password:
+                raise RuntimeError(
+                    "Neo4j driver was not supplied and "
+                    "no Neo4j password was provided."
+                )
+
+            self.driver = GraphDatabase.driver(
+                self.uri,
+                auth=(
+                    self.user,
+                    self.password,
+                ),
+            )
+
+            owns_driver = True
+
+        else:
+
+            owns_driver = False
 
         try:
-            driver.verify_connectivity()
 
-            with driver.session(database=self.database) as session:
-                nodes = [dict(record) for record in session.run(NODE_QUERY)]
-                edges = [dict(record) for record in session.run(EDGE_QUERY)]
+            self.driver.verify_connectivity()
+
+            with self.driver.session(
+                    database=self.database
+            ) as session:
+
+                nodes = [
+                    dict(record)
+                    for record in session.run(NODE_QUERY)
+                ]
+
+                edges = [
+                    dict(record)
+                    for record in session.run(EDGE_QUERY)
+                ]
+
         finally:
-            driver.close()
 
-        return self.build(nodes, edges)
+            if owns_driver:
+                self.driver.close()
+
+        return self.build(
+            nodes,
+            edges,
+        )
 
     ###############################################################
     # Build the planner-facing graph
