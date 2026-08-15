@@ -1,0 +1,707 @@
+{
+  "actors": [
+    {
+      "id": "customer",
+      "name": "Customer"
+    },
+    {
+      "id": "bank_administrator",
+      "name": "Bank Administrator"
+    }
+  ],
+  "components": [
+    {
+      "id": "banking_system",
+      "name": "Banking System"
+    },
+    {
+      "id": "account_service",
+      "name": "Account Service"
+    },
+    {
+      "id": "user_service",
+      "name": "User Service"
+    },
+    {
+      "id": "fund_transfer_service",
+      "name": "Fund Transfer Service"
+    },
+    {
+      "id": "transaction_service",
+      "name": "Transaction Service"
+    }
+  ],
+  "operations": [
+    {
+      "id": "register_user",
+      "name": "Register User"
+    },
+    {
+      "id": "create_user",
+      "name": "Create User"
+    },
+    {
+      "id": "retrieve_user",
+      "name": "Retrieve User"
+    },
+    {
+      "id": "update_user",
+      "name": "Update User"
+    },
+    {
+      "id": "delete_user",
+      "name": "Delete User"
+    },
+    {
+      "id": "verify_user_exists",
+      "name": "Verify User Exists"
+    },
+    {
+      "id": "validate_user",
+      "name": "Validate User"
+    },
+    {
+      "id": "create_account",
+      "name": "Create Account"
+    },
+    {
+      "id": "retrieve_account",
+      "name": "Retrieve Account"
+    },
+    {
+      "id": "retrieve_account_balance",
+      "name": "Retrieve Account Balance"
+    },
+    {
+      "id": "update_account",
+      "name": "Update Account"
+    },
+    {
+      "id": "verify_account_status",
+      "name": "Verify Account Status"
+    },
+    {
+      "id": "validate_account_ownership",
+      "name": "Validate Account Ownership"
+    },
+    {
+      "id": "transfer_funds",
+      "name": "Transfer Funds"
+    },
+    {
+      "id": "validate_transfer_request",
+      "name": "Validate Transfer Request"
+    },
+    {
+      "id": "verify_accounts_exist",
+      "name": "Verify Accounts Exist"
+    },
+    {
+      "id": "check_sufficient_balance",
+      "name": "Check Sufficient Balance"
+    },
+    {
+      "id": "debit_account",
+      "name": "Debit Account"
+    },
+    {
+      "id": "credit_account",
+      "name": "Credit Account"
+    },
+    {
+      "id": "persist_transfer",
+      "name": "Persist Transfer"
+    },
+    {
+      "id": "persist_fund_transfer",
+      "name": "Persist Fund Transfer"
+    },
+    {
+      "id": "generate_transfer_response",
+      "name": "Generate Transfer Response"
+    },
+    {
+      "id": "record_debit_transaction",
+      "name": "Record Debit Transaction"
+    },
+    {
+      "id": "record_credit_transaction",
+      "name": "Record Credit Transaction"
+    },
+    {
+      "id": "create_transaction",
+      "name": "Create Transaction"
+    },
+    {
+      "id": "persist_transaction",
+      "name": "Persist Transaction"
+    },
+    {
+      "id": "retrieve_account_transactions",
+      "name": "Retrieve Account Transactions"
+    },
+    {
+      "id": "sort_transactions",
+      "name": "Sort Transactions"
+    },
+    {
+      "id": "generate_account_statement",
+      "name": "Generate Account Statement"
+    },
+    {
+      "id": "generate_transaction_statement",
+      "name": "Generate Transaction Statement"
+    },
+    {
+      "id": "calculate_balance",
+      "name": "Calculate Balance"
+    },
+    {
+      "id": "update_account_balance",
+      "name": "Update Account Balance"
+    }
+  ],
+  "entities": [
+    {
+      "id": "customer",
+      "name": "Customer"
+    },
+    {
+      "id": "user",
+      "name": "User"
+    },
+    {
+      "id": "account",
+      "name": "Account"
+    },
+    {
+      "id": "fund_transfer",
+      "name": "Fund Transfer"
+    },
+    {
+      "id": "transaction",
+      "name": "Transaction"
+    },
+    {
+      "id": "balance",
+      "name": "Balance"
+    },
+    {
+      "id": "money",
+      "name": "Money"
+    },
+    {
+      "id": "transfer_request",
+      "name": "Transfer Request"
+    },
+    {
+      "id": "transfer_response",
+      "name": "Transfer Response"
+    },
+    {
+      "id": "statement",
+      "name": "Statement"
+    },
+    {
+      "id": "account_identifier",
+      "name": "Account Identifier"
+    },
+    {
+      "id": "customer_identifier",
+      "name": "Customer Identifier"
+    }
+  ],
+  "events": [
+    {
+      "id": "user_created",
+      "name": "User Created"
+    },
+    {
+      "id": "user_updated",
+      "name": "User Updated"
+    },
+    {
+      "id": "user_deleted",
+      "name": "User Deleted"
+    },
+    {
+      "id": "account_created",
+      "name": "Account Created"
+    },
+    {
+      "id": "account_updated",
+      "name": "Account Updated"
+    },
+    {
+      "id": "balance_retrieved",
+      "name": "Balance Retrieved"
+    },
+    {
+      "id": "transfer_requested",
+      "name": "Transfer Requested"
+    },
+    {
+      "id": "transfer_validated",
+      "name": "Transfer Validated"
+    },
+    {
+      "id": "account_debited",
+      "name": "Account Debited"
+    },
+    {
+      "id": "account_credited",
+      "name": "Account Credited"
+    },
+    {
+      "id": "transaction_created",
+      "name": "Transaction Created"
+    },
+    {
+      "id": "transfer_completed",
+      "name": "Transfer Completed"
+    },
+    {
+      "id": "statement_generated",
+      "name": "Statement Generated"
+    }
+  ],
+  "rules": [
+    {
+      "id": "BR-001",
+      "name": "User must exist before banking operations",
+      "statement": "Every user must exist before performing banking operations."
+    },
+    {
+      "id": "BR-002",
+      "name": "Only active accounts may transfer funds",
+      "statement": "Only active accounts may participate in fund transfers."
+    },
+    {
+      "id": "BR-003",
+      "name": "Transfer amount must be positive",
+      "statement": "Transfer amount must be greater than zero."
+    },
+    {
+      "id": "BR-004",
+      "name": "Transfer cannot exceed available balance",
+      "statement": "Transfer amount must not exceed available balance."
+    },
+    {
+      "id": "BR-005",
+      "name": "Source and destination accounts must differ",
+      "statement": "Source and destination accounts must be different."
+    },
+    {
+      "id": "BR-006",
+      "name": "Successful transfer generates transactions",
+      "statement": "Every successful transfer generates financial transactions."
+    },
+    {
+      "id": "BR-007",
+      "name": "Balances remain synchronized",
+      "statement": "Account balances must remain synchronized after transfer completion."
+    },
+    {
+      "id": "BR-008",
+      "name": "Transfer produces audit trail",
+      "statement": "Every transfer shall produce an audit trail."
+    },
+    {
+      "id": "BR-009",
+      "name": "Failed transfer does not modify balances",
+      "statement": "Failed transfers shall not modify balances."
+    },
+    {
+      "id": "BR-010",
+      "name": "Transaction history is immutable",
+      "statement": "Transaction history shall remain immutable."
+    }
+  ],
+  "relationships": [
+    {
+      "source": "customer",
+      "target": "account",
+      "type": "owns"
+    },
+    {
+      "source": "bank_administrator",
+      "target": "register_user",
+      "type": "performs",
+      "condition": "administrator is authenticated"
+    },
+    {
+      "source": "customer",
+      "target": "create_account",
+      "type": "requests",
+      "condition": "customer exists"
+    },
+    {
+      "source": "customer",
+      "target": "transfer_funds",
+      "type": "performs"
+    },
+
+    {
+      "source": "banking_system",
+      "target": "register_user",
+      "type": "executes"
+    },
+    {
+      "source": "account_service",
+      "target": "create_account",
+      "type": "executes"
+    },
+    {
+      "source": "fund_transfer_service",
+      "target": "transfer_funds",
+      "type": "executes"
+    },
+    {
+      "source": "transaction_service",
+      "target": "create_transaction",
+      "type": "executes"
+    },
+
+    {
+      "source": "register_user",
+      "target": "validate_user",
+      "type": "includes"
+    },
+    {
+      "source": "register_user",
+      "target": "verify_user_exists",
+      "type": "includes"
+    },
+    {
+      "source": "register_user",
+      "target": "create_user",
+      "type": "includes"
+    },
+
+    {
+      "source": "create_account",
+      "target": "user",
+      "type": "requires",
+      "condition": "customer exists"
+    },
+    {
+      "source": "create_account",
+      "target": "account",
+      "type": "creates"
+    },
+    {
+      "source": "create_user",
+      "target": "user",
+      "type": "creates"
+    },
+    {
+      "source": "update_user",
+      "target": "user",
+      "type": "modifies",
+      "condition": "user exists"
+    },
+    {
+      "source": "update_account",
+      "target": "account",
+      "type": "modifies",
+      "condition": "account exists"
+    },
+
+    {
+      "source": "transfer_funds",
+      "target": "transfer_request",
+      "type": "accepts"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "validate_transfer_request",
+      "type": "includes"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "retrieve_account",
+      "type": "includes"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "verify_account_status",
+      "type": "includes"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "check_sufficient_balance",
+      "type": "includes"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "debit_account",
+      "type": "includes",
+      "condition": "transfer eligibility is confirmed"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "credit_account",
+      "type": "includes",
+      "condition": "transfer eligibility is confirmed"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "create_transaction",
+      "type": "includes",
+      "condition": "transfer succeeds"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "persist_fund_transfer",
+      "type": "includes",
+      "condition": "transfer succeeds"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "generate_transfer_response",
+      "type": "includes",
+      "condition": "transfer succeeds"
+    },
+
+    {
+      "source": "debit_account",
+      "target": "account",
+      "type": "modifies",
+      "condition": "source account is active and sufficient balance exists"
+    },
+    {
+      "source": "credit_account",
+      "target": "account",
+      "type": "modifies",
+      "condition": "destination account is active"
+    },
+    {
+      "source": "create_transaction",
+      "target": "transaction",
+      "type": "creates"
+    },
+    {
+      "source": "transaction",
+      "target": "account",
+      "type": "linked_to"
+    },
+
+    {
+      "source": "retrieve_account_transactions",
+      "target": "sort_transactions",
+      "type": "precedes"
+    },
+    {
+      "source": "generate_account_statement",
+      "target": "generate_transaction_statement",
+      "type": "includes"
+    },
+    {
+      "source": "generate_account_statement",
+      "target": "statement",
+      "type": "creates"
+    },
+    {
+      "source": "update_account_balance",
+      "target": "balance",
+      "type": "modifies"
+    },
+
+    {
+      "source": "transfer_requested",
+      "target": "transfer_funds",
+      "type": "triggers"
+    },
+    {
+      "source": "validate_transfer_request",
+      "target": "transfer_validated",
+      "type": "produces",
+      "condition": "request is valid"
+    },
+    {
+      "source": "debit_account",
+      "target": "account_debited",
+      "type": "produces",
+      "condition": "debit succeeds"
+    },
+    {
+      "source": "credit_account",
+      "target": "account_credited",
+      "type": "produces",
+      "condition": "credit succeeds"
+    },
+    {
+      "source": "create_transaction",
+      "target": "transaction_created",
+      "type": "produces"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "transfer_completed",
+      "type": "produces",
+      "condition": "all required transfer operations succeed"
+    },
+    {
+      "source": "generate_account_statement",
+      "target": "statement_generated",
+      "type": "produces",
+      "condition": "statement generated successfully"
+    },
+    {
+      "source": "create_user",
+      "target": "user_created",
+      "type": "produces",
+      "condition": "user creation succeeds"
+    },
+    {
+      "source": "update_user",
+      "target": "user_updated",
+      "type": "produces",
+      "condition": "user update succeeds"
+    },
+    {
+      "source": "delete_user",
+      "target": "user_deleted",
+      "type": "produces",
+      "condition": "user deletion succeeds"
+    },
+    {
+      "source": "create_account",
+      "target": "account_created",
+      "type": "produces",
+      "condition": "account creation succeeds"
+    },
+    {
+      "source": "update_account",
+      "target": "account_updated",
+      "type": "produces",
+      "condition": "account update succeeds"
+    },
+    {
+      "source": "retrieve_account_balance",
+      "target": "balance_retrieved",
+      "type": "produces",
+      "condition": "balance retrieval succeeds"
+    },
+
+    {
+      "source": "transfer_funds",
+      "target": "fund_transfer",
+      "type": "creates",
+      "condition": "transfer succeeds"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "transaction",
+      "type": "produces",
+      "condition": "transfer succeeds"
+    },
+    {
+      "source": "transfer_funds",
+      "target": "balance",
+      "type": "modifies",
+      "condition": "transfer succeeds"
+    },
+
+    {
+      "source": "account_debited",
+      "target": "account",
+      "type": "relates_to"
+    },
+    {
+      "source": "account_credited",
+      "target": "account",
+      "type": "relates_to"
+    },
+
+    {
+      "source": "BR-001",
+      "target": "user",
+      "type": "constrains",
+      "condition": "user must exist"
+    },
+    {
+      "source": "BR-002",
+      "target": "account",
+      "type": "constrains",
+      "condition": "account must be active"
+    },
+    {
+      "source": "BR-002",
+      "target": "transfer_funds",
+      "type": "constrains"
+    },
+    {
+      "source": "BR-003",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "transfer amount > 0"
+    },
+    {
+      "source": "BR-004",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "requested amount <= available balance"
+    },
+    {
+      "source": "BR-004",
+      "target": "balance",
+      "type": "constrains",
+      "condition": "available balance must cover transfer"
+    },
+    {
+      "source": "BR-005",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "source and destination must differ"
+    },
+    {
+      "source": "BR-005",
+      "target": "account",
+      "type": "constrains",
+      "condition": "source account != destination account"
+    },
+    {
+      "source": "BR-006",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "successful transfer"
+    },
+    {
+      "source": "BR-007",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "after transfer completion"
+    },
+    {
+      "source": "BR-007",
+      "target": "balance",
+      "type": "constrains",
+      "condition": "balances must remain synchronized"
+    },
+    {
+      "source": "BR-008",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "every transfer"
+    },
+    {
+      "source": "BR-009",
+      "target": "transfer_funds",
+      "type": "constrains",
+      "condition": "transfer fails"
+    },
+    {
+      "source": "BR-010",
+      "target": "transaction",
+      "type": "constrains",
+      "condition": "transaction history must remain immutable"
+    },
+    {
+      "source": "BR-010",
+      "target": "retrieve_account_transactions",
+      "type": "constrains",
+      "condition": "historical records remain immutable"
+    }
+  ]
+}

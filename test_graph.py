@@ -12,8 +12,10 @@ sys.modules.setdefault("utils", utils_stub)
 
 from graph_matcher import GraphMatcher
 from beam_search_planner import BeamSearchPlanner
+from contextual_subgraph import ContextualSubgraphBuilder
 from graph_planner import GraphPlanner
 from migrate_domain_graph_weights import apply_edge_weights
+from neo4j_domain_graph import Neo4jDomainGraph
 
 
 class FakeEmbeddingService:
@@ -312,6 +314,265 @@ class BeamSearchPlannerTests(unittest.TestCase):
         self.assertEqual(
             [step["domain_node_id"] for step in search_result["selection"]],
             ["create", "assign_room"],
+        )
+
+
+class FakeNeo4jEmbeddingService:
+    def encode(self, text):
+        class _Vector(list):
+            def tolist(self):
+                return list(self)
+
+        return _Vector([float(len(text)), 1.0])
+
+
+class Neo4jDomainGraphTests(unittest.TestCase):
+
+    def _graph(self):
+        nodes = [
+            {"id": "customer", "name": "Customer", "types": ["Actor", "DomainEntity"]},
+            {"id": "register_user", "name": "Register User", "types": ["Operation"]},
+            {"id": "validate_user", "name": "Validate User", "types": ["Operation"]},
+            {"id": "BR-001", "name": "Unique email", "types": ["Rule"]},
+        ]
+        edges = [
+            {
+                "id": "edge:0",
+                "source": "register_user",
+                "target": "validate_user",
+                "type": "OPERATION_INCLUDES",
+                "condition": None,
+                "raw_type": "includes",
+            },
+            {
+                "id": "edge:1",
+                "source": "customer",
+                "target": "register_user",
+                "type": "ACTOR_PERFORMS",
+                "condition": "customer exists",
+                "raw_type": "performs",
+            },
+            {
+                "id": "edge:2",
+                "source": "BR-001",
+                "target": "register_user",
+                "type": "RULE_CONSTRAINS",
+                "condition": None,
+                "raw_type": "constrains",
+            },
+        ]
+        return Neo4jDomainGraph(FakeNeo4jEmbeddingService()).build(nodes, edges)
+
+    def test_only_operations_are_marked_executable(self):
+        graph = self._graph()
+
+        self.assertTrue(graph["nodes"]["register_user"]["executable"])
+        self.assertFalse(graph["nodes"]["customer"]["executable"])
+        self.assertTrue(graph["nodes"]["BR-001"]["constraint"])
+
+    def test_relationship_types_become_routing_weights(self):
+        edges = {edge["id"]: edge for edge in self._graph()["edges"]}
+
+        self.assertEqual(edges["edge:0"]["edge_type"], "mandatory")
+        self.assertEqual(edges["edge:0"]["weight"], 2)
+        self.assertTrue(edges["edge:1"]["context"])
+        self.assertEqual(edges["edge:1"]["condition"], "customer exists")
+
+    def test_nodes_are_embedded_and_keep_the_ontology_relation_name(self):
+        graph = self._graph()
+
+        self.assertEqual(len(graph["nodes"]["register_user"]["embedding"]), 2)
+        self.assertEqual(graph["edges"][0]["relation"], "OPERATION_INCLUDES")
+
+    def test_edges_pointing_at_unknown_nodes_are_dropped(self):
+        graph = Neo4jDomainGraph(FakeNeo4jEmbeddingService()).build(
+            [{"id": "register_user", "name": "Register User", "types": ["Operation"]}],
+            [{"id": "edge:0", "source": "register_user", "target": "missing", "type": "OPERATION_INCLUDES"}],
+        )
+
+        self.assertEqual(graph["edges"], [])
+
+
+class ContextualSubgraphTests(unittest.TestCase):
+
+    def _domain_graph(self):
+        graph = nx.DiGraph()
+        graph.add_node("register", name="Register User", executable=True)
+        graph.add_node("validate", name="Validate User", executable=True)
+        graph.add_node("notify", name="Notify Customer", executable=True)
+        graph.add_node("customer", name="Customer", executable=False, types=["Actor"])
+        graph.add_edge("register", "validate", relation="OPERATION_INCLUDES", edge_type="mandatory", weight=2)
+        graph.add_edge("validate", "notify", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+        graph.add_edge("customer", "register", relation="ACTOR_PERFORMS", edge_type="alternative", weight=4, context=True)
+        return graph
+
+    def _plan(self, first, second, graph=None):
+        return {
+            "actions": [
+                {
+                    "prompt_node_id": "P1",
+                    "prompt_text": "register",
+                    "candidates": [{"domain_node_id": first, "domain_node_name": first, "similarity": 0.9}],
+                },
+                {
+                    "prompt_node_id": "P2",
+                    "prompt_text": "notify",
+                    "candidates": [{"domain_node_id": second, "domain_node_name": second, "similarity": 0.8}],
+                },
+            ],
+            "domain_graph": self._domain_graph() if graph is None else graph,
+        }
+
+    def test_context_expansion_keeps_the_relationships_around_matches(self):
+        contextual = ContextualSubgraphBuilder().build(
+            self._plan("register", "notify")
+        )
+        subgraph = contextual["domain_graph"]
+
+        self.assertEqual(set(subgraph.nodes), {"register", "validate", "notify", "customer"})
+        self.assertIn(("customer", "register"), subgraph.edges)
+
+    def test_non_executable_matches_are_reported_as_unsupported(self):
+        contextual = ContextualSubgraphBuilder().build(
+            self._plan("customer", "notify")
+        )
+
+        self.assertEqual(len(contextual["invalid_actions"]), 1)
+        self.assertEqual(contextual["actions"][0]["candidates"], [])
+
+    def test_weighted_relationships_select_dijkstra(self):
+        contextual = ContextualSubgraphBuilder().build(
+            self._plan("register", "notify")
+        )
+
+        self.assertEqual(contextual["search_strategy"], "dijkstra")
+
+    def test_equal_cost_relationships_select_bfs(self):
+        graph = nx.DiGraph()
+        graph.add_node("register", name="Register", executable=True)
+        graph.add_node("notify", name="Notify", executable=True)
+        graph.add_edge("register", "notify", relation="OPERATION_PRECEDES", weight=1)
+
+        contextual = ContextualSubgraphBuilder().build(
+            self._plan("register", "notify", graph=graph)
+        )
+
+        self.assertEqual(contextual["search_strategy"], "bfs")
+
+    def test_disconnected_matches_are_connected_through_the_domain_graph(self):
+        graph = self._domain_graph()
+        graph.add_node("archive", name="Archive", executable=True)
+        graph.add_node("report", name="Report", executable=True)
+        graph.add_edge("notify", "archive", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+        graph.add_edge("archive", "report", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+
+        contextual = ContextualSubgraphBuilder().build(
+            self._plan("register", "report", graph=graph)
+        )
+        subgraph = contextual["domain_graph"]
+
+        self.assertTrue(nx.has_path(subgraph, "register", "report"))
+        self.assertEqual(
+            subgraph.graph["connections"][0]["path"],
+            ["register", "validate", "notify", "archive", "report"],
+        )
+
+    def test_paths_that_no_longer_describe_the_prompt_are_rejected(self):
+        graph = self._domain_graph()
+        graph.add_node("archive", name="Archive", executable=True)
+        graph.add_node("report", name="Report", executable=True)
+        graph.add_edge("notify", "archive", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+        graph.add_edge("archive", "report", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+
+        contextual = ContextualSubgraphBuilder(max_path_length=2).build(
+            self._plan("register", "report", graph=graph)
+        )
+        subgraph = contextual["domain_graph"]
+
+        self.assertEqual(subgraph.graph["connections"], [])
+        self.assertIn("too long", subgraph.graph["disconnected_pairs"][0]["reason"])
+
+    def test_deprecated_relationships_are_never_used_to_reconnect(self):
+        graph = nx.DiGraph()
+        graph.add_node("register", name="Register", executable=True)
+        graph.add_node("notify", name="Notify", executable=True)
+        graph.add_edge("register", "notify", relation="OPERATION_PRECEDES", edge_type="deprecated", weight=100)
+        graph.add_node("other", name="Other", executable=True)
+        graph.add_edge("other", "register", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1)
+
+        contextual = ContextualSubgraphBuilder(radius=0).build(
+            self._plan("register", "notify", graph=graph)
+        )
+        subgraph = contextual["domain_graph"]
+
+        self.assertEqual(subgraph.graph["connections"], [])
+        self.assertIn("deprecated", subgraph.graph["disconnected_pairs"][0]["reason"])
+
+
+class BeamSearchScoringTests(unittest.TestCase):
+
+    def _contextual_plan(self):
+        graph = nx.DiGraph()
+        graph.add_node("register", name="Register User", executable=True)
+        graph.add_node("validate", name="Validate User", executable=True)
+        graph.add_node("notify", name="Notify Customer", executable=True)
+        graph.add_node("customer", name="Customer", executable=False)
+        graph.add_edge("register", "validate", relation="OPERATION_INCLUDES", edge_type="mandatory", weight=2)
+        graph.add_edge("validate", "notify", relation="OPERATION_PRECEDES", edge_type="mandatory", weight=1, condition="user is valid")
+        graph.graph["search_strategy"] = "dijkstra"
+
+        return {
+            "actions": [
+                {
+                    "prompt_node_id": "P1",
+                    "prompt_text": "register",
+                    "candidates": [{"domain_node_id": "register", "domain_node_name": "Register User", "similarity": 0.9}],
+                },
+                {
+                    "prompt_node_id": "P2",
+                    "prompt_text": "notify",
+                    "candidates": [
+                        {"domain_node_id": "customer", "domain_node_name": "Customer", "similarity": 0.95},
+                        {"domain_node_id": "notify", "domain_node_name": "Notify Customer", "similarity": 0.8},
+                    ],
+                },
+            ],
+            "domain_graph": graph,
+        }
+
+    def test_constraint_score_rejects_a_non_executable_best_match(self):
+        search_result = BeamSearchPlanner(beam_width=2).search(self._contextual_plan())
+
+        self.assertEqual(
+            [step["domain_node_id"] for step in search_result["selection"]],
+            ["register", "notify"],
+        )
+        self.assertLess(search_result["selection"][1]["constraint_score"], 0.0001)
+
+    def test_every_score_axis_is_reported_per_step(self):
+        search_result = BeamSearchPlanner(beam_width=2).search(self._contextual_plan())
+        step = search_result["selection"][1]
+
+        for key in ("semantic_score", "relationship_score", "connectivity_score", "constraint_score"):
+            self.assertIn(key, step)
+
+    def test_relationship_conditions_are_surfaced_as_workflow_constraints(self):
+        workflow_graph = BeamSearchPlanner(beam_width=2).plan(self._contextual_plan())
+
+        self.assertEqual(
+            [item["condition"] for item in workflow_graph.graph["constraints"]],
+            ["user is valid"],
+        )
+
+    def test_bfs_strategy_is_used_when_the_subgraph_asks_for_it(self):
+        plan = self._contextual_plan()
+        plan["domain_graph"].graph["search_strategy"] = "bfs"
+
+        search_result = BeamSearchPlanner(beam_width=2).search(plan)
+
+        self.assertEqual(
+            search_result["selection"][1]["transition"]["path"],
+            ["register", "validate", "notify"],
         )
 
 

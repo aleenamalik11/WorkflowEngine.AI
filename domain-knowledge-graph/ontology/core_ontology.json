@@ -1,0 +1,261 @@
+{
+  "version": "1.1.0",
+
+  "node_types": {
+    "actors": "Actor",
+    "components": "Component",
+    "operations": "Operation",
+    "entities": "DomainEntity",
+    "events": "Event",
+    "rules": "Rule"
+  },
+
+  "relationships": [
+    {
+      "type": "COMPONENT_EXECUTES",
+      "raw_terms": ["executes", "execute", "runs", "run"],
+      "source_types": ["Component"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "ACTOR_PERFORMS",
+      "raw_terms": [
+        "performs",
+        "perform",
+        "executes",
+        "execute",
+        "carries out",
+        "carry out",
+        "initiates",
+        "handles"
+      ],
+      "source_types": ["Actor"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "ACTOR_REQUESTS",
+      "raw_terms": [
+        "requests",
+        "request",
+        "asks for",
+        "ask for"
+      ],
+      "source_types": ["Actor"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "ENTITY_OWNS",
+      "raw_terms": [
+        "owns",
+        "own",
+        "belongs to",
+        "belongs_to"
+      ],
+      "source_types": ["Actor", "DomainEntity"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_INCLUDES",
+      "raw_terms": [
+        "includes",
+        "include",
+        "contains",
+        "contain",
+        "invokes",
+        "calls",
+        "uses"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "OPERATION_REQUIRES",
+      "raw_terms": [
+        "requires",
+        "require",
+        "depends on",
+        "depends_on"
+      ],
+      "source_types": [
+        "Operation"
+      ],
+      "target_types": [
+        "Operation",
+        "DomainEntity",
+        "Rule"
+      ]
+    },
+
+    {
+      "type": "OPERATION_ACCEPTS",
+      "raw_terms": [
+        "accepts",
+        "accept",
+        "receives",
+        "takes"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_CREATES",
+      "raw_terms": [
+        "creates",
+        "create"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_MODIFIES",
+      "raw_terms": [
+        "modifies",
+        "modify",
+        "updates",
+        "update",
+        "changes",
+        "change"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_VALIDATES",
+      "raw_terms": [
+        "validates",
+        "validate",
+        "verifies",
+        "verify",
+        "checks",
+        "check"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_PRODUCES_EVENT",
+      "raw_terms": [
+        "produces",
+        "produce",
+        "emits",
+        "emit",
+        "generates",
+        "generate"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["Event"]
+    },
+
+    {
+      "type": "OPERATION_PRODUCES",
+      "raw_terms": [
+        "produces",
+        "produce",
+        "emits",
+        "emit",
+        "generates",
+        "generate"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "ENTITY_LINKED_TO",
+      "raw_terms": [
+        "linked to",
+        "linked_to",
+        "associated with",
+        "associated_with",
+        "related to",
+        "related_to"
+      ],
+      "source_types": ["DomainEntity"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "OPERATION_PRECEDES",
+      "raw_terms": [
+        "precedes",
+        "precede",
+        "happens before",
+        "before"
+      ],
+      "source_types": ["Operation"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "EVENT_TRIGGERS",
+      "raw_terms": [
+        "triggers",
+        "trigger",
+        "causes",
+        "causes"
+      ],
+      "source_types": ["Event"],
+      "target_types": ["Operation"]
+    },
+
+    {
+      "type": "EVENT_RELATES_TO",
+      "raw_terms": [
+        "relates to",
+        "related to",
+        "associated with",
+        "concerns",
+        "affects"
+      ],
+      "source_types": ["Event"],
+      "target_types": ["DomainEntity"]
+    },
+
+    {
+      "type": "RULE_CONSTRAINS",
+      "raw_terms": [
+        "constrains",
+        "constrain",
+        "governs",
+        "govern",
+        "applies to",
+        "applies_to",
+        "restricts",
+        "restrict",
+        "controls",
+        "control",
+        "enforces",
+        "enforce"
+      ],
+      "source_types": ["Rule"],
+      "target_types": [
+        "Operation",
+        "DomainEntity",
+        "Event"
+      ]
+    },
+    {
+  "type": "COMPONENT_EXECUTES",
+  "raw_terms": [
+    "executes",
+    "execute",
+    "runs",
+    "run",
+    "handles",
+    "processes",
+    "implements"
+  ],
+  "source_types": ["Component"],
+  "target_types": ["Operation"]
+}
+  ]
+}

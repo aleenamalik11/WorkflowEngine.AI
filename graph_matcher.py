@@ -255,6 +255,29 @@ class GraphMatcher:
     # Top K candidates per prompt action (input for beam search)
     ###############################################################
 
+    @staticmethod
+    def _node_similarity(query_embedding, node):
+        """Best similarity between the concept and a domain node.
+
+        A domain node is embedded twice: once from its full ontology text
+        (name + types + BRS statements) and once from its bare name.  Short
+        prompts match the name, long prompts match the description, so the
+        stronger of the two signals is used.
+        """
+        embedding = node.get("embedding")
+        if embedding is None:
+            return None
+
+        score = cosine_similarity(query_embedding, embedding)
+
+        name_embedding = node.get("name_embedding")
+        if name_embedding is not None:
+            score = max(
+                score, cosine_similarity(query_embedding, name_embedding)
+            )
+
+        return score
+
     def candidates(self, prompt_graph, k=5, threshold=0.35):
         """Propose the top ``k`` domain nodes for every prompt action.
 
@@ -274,25 +297,25 @@ class GraphMatcher:
 
             scored = []
             for node_id, node in domain_nodes:
-                embedding = node.get("embedding")
-                if embedding is None:
+                score = self._node_similarity(query_embedding, node)
+                if score is None:
                     continue
 
-                scored.append((
-                    cosine_similarity(query_embedding, embedding),
-                    node_id,
-                    node,
-                ))
+                scored.append((score, node_id, node))
 
             scored.sort(key=lambda item: item[0], reverse=True)
+
+            top = scored[:max(1, int(k))]
 
             candidates = [
                 {
                     "domain_node_id": node_id,
                     "domain_node_name": node.get("name", str(node_id)),
+                    "domain_node_types": node.get("types", []),
+                    "executable": node.get("executable"),
                     "similarity": score,
                 }
-                for score, node_id, node in scored[:max(1, int(k))]
+                for score, node_id, node in top
                 if score >= threshold
             ]
 
@@ -300,6 +323,16 @@ class GraphMatcher:
                 "prompt_node_id": concept["node_id"],
                 "prompt_text": concept["text"],
                 "candidates": candidates,
+                "top_candidates": [
+                    {
+                        "domain_node_id": node_id,
+                        "domain_node_name": node.get("name", str(node_id)),
+                        "domain_node_types": node.get("types", []),
+                        "executable": node.get("executable"),
+                        "similarity": score,
+                    }
+                    for score, node_id, node in top
+                ],
                 "best_similarity": scored[0][0] if scored else None,
                 "threshold": threshold,
             })
@@ -307,13 +340,34 @@ class GraphMatcher:
         return {
             "actions": actions,
             "domain_graph": domain_digraph,
+            "concept_count": len(concepts),
+            "domain_node_count": len(domain_nodes),
+            "embedded_domain_node_count": sum(
+                1 for _, node in domain_nodes if node.get("embedding") is not None
+            ),
         }
 
     @staticmethod
     def print_candidates(candidate_plan):
         """Print the candidate shortlist produced for each prompt action."""
         print("\nTop candidates per action")
-        for action in candidate_plan.get("actions", []):
+
+        actions = candidate_plan.get("actions", [])
+
+        print(
+            f"  concepts={candidate_plan.get('concept_count', len(actions))}  "
+            f"domain nodes={candidate_plan.get('domain_node_count', 'n/a')}  "
+            f"embedded={candidate_plan.get('embedded_domain_node_count', 'n/a')}"
+        )
+
+        if not actions:
+            print(
+                "  no concepts extracted from the prompt graph: "
+                "the prompt produced no Action nodes"
+            )
+            return
+
+        for action in actions:
             print(f"- {action['prompt_text']}")
             if not action["candidates"]:
                 best = action.get("best_similarity")
@@ -322,10 +376,17 @@ class GraphMatcher:
                     f"    no candidate above threshold "
                     f"{action['threshold']:.3f} (best={best_str})"
                 )
+                for candidate in action.get("top_candidates", []):
+                    print(
+                        f"      rejected {candidate['domain_node_name']} "
+                        f"{candidate.get('domain_node_types', [])} "
+                        f"({candidate['similarity']:.3f})"
+                    )
                 continue
             for candidate in action["candidates"]:
                 print(
                     f"    {candidate['domain_node_name']} "
+                    f"{candidate.get('domain_node_types', [])} "
                     f"({candidate['similarity']:.3f})"
                 )
 

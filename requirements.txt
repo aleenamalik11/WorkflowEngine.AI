@@ -4,6 +4,9 @@ pandas==3.0.5
 openpyxl==3.1.5
 networkx==2.8.8
 
+# Domain knowledge graph storage
+neo4j==5.28.1
+
 # NLP and semantic embeddings
 sentence-transformers==5.6.1
 spacy==3.8.14

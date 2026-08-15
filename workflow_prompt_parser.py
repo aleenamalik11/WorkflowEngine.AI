@@ -49,6 +49,41 @@ class WorkflowPromptParser:
         self.nlp = spacy.load("en_core_web_sm")
 
     # -----------------------------------------------------
+    # Imperative repair
+    # -----------------------------------------------------
+
+    def _imperative_actions(self, doc):
+        """Recover imperative verbs that spaCy tagged as nouns.
+
+        A bare command such as ``Transfer funds`` has no subject, so the
+        statistical tagger reads the leading token as a noun ("transfer" the
+        thing) instead of a verb ("to transfer").  The sentence is therefore
+        parsed again behind a polite cue, which restores the verb reading
+        without touching the rest of the pipeline.
+        """
+        recovered = {}
+
+        for sentence in doc.sents:
+
+            first = sentence[0]
+
+            if first.pos_ not in ("NOUN", "PROPN"):
+                continue
+
+            repaired = self.nlp("Please " + sentence.text)
+
+            if len(repaired) < 2 or repaired[1].pos_ != "VERB":
+                continue
+
+            recovered[first.i] = PromptAction(
+                text=first.text,
+                lemma=repaired[1].lemma_.lower(),
+                token_index=first.i,
+            )
+
+        return recovered
+
+    # -----------------------------------------------------
     # Parse prompt
     # -----------------------------------------------------
 
@@ -62,7 +97,15 @@ class WorkflowPromptParser:
         # Actions
         ####################################################
 
+        imperative_actions = self._imperative_actions(doc)
+
         for token in doc:
+
+            if token.i in imperative_actions:
+
+                analysis.actions.append(imperative_actions[token.i])
+
+                continue
 
             # spaCy can tag the verb in "after that notify teacher" as a
             # noun. Treat that narrow coordination pattern as an action.

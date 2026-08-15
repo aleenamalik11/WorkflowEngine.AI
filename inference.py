@@ -1,208 +1,240 @@
-import json
+"""
+Command-line entry point for WorkflowEngine.AI.
 
-from prompt_builder_graph import PromptGraphBuilder
-from graph_matcher import GraphMatcher
-from beam_search_planner import BeamSearchPlanner
-from graph_planner import GraphPlanner
-from workflow_generator import WorkflowGenerator
+Usage:
+
+    python inference.py "transfer funds"
+
+or:
+
+    python inference.py "check balance, then transfer funds"
+"""
+
+import sys
+import json
+import os
+
+from pipeline import WorkflowPipeline
+
+from llm_service import LLMService
+
+from domain_graph_client import (
+    InMemoryDomainGraph,
+    DomainNode,
+    DomainRelationship,
+)
+
+from utils import EmbeddingService
 
 from function_matcher import FunctionMatcher
-from utils import (
-    load_graph,
-    EmbeddingService
-)
-from workflow_prompt_parser import WorkflowPromptParser
 
-###############################################################
-# CONFIG
-###############################################################
 
-EMBEDDING_MODEL =  "sentence-transformers/all-MiniLM-L6-v2"
+def build_domain_graph():
+    """
+    Replace this with your actual Neo4jDomainGraph configuration
+    when running against the real domain graph.
 
-DOMAIN_GRAPH = "models/domain_graph.pkl"
+    Keeping this function here makes inference easy to run locally.
+    """
 
-FUNCTIONS = "functions.json"
+    nodes = {
 
-TOP_K = 5
+        "validate_transfer":
+            DomainNode(
+                id="validate_transfer",
+                name="Validate Transfer Request",
+                node_type="Operation",
+            ),
 
-BEAM_WIDTH = 3
+        "check_balance":
+            DomainNode(
+                id="check_balance",
+                name="Check Balance",
+                node_type="Operation",
+            ),
 
-###############################################################
-# LOAD COMPONENTS
-###############################################################
+        "process_transfer":
+            DomainNode(
+                id="process_transfer",
+                name="Process Transfer",
+                node_type="Operation",
+            ),
 
-print("=" * 70)
-print("Loading AI Engine")
-print("=" * 70)
+        "generate_transfer_response":
+            DomainNode(
+                id="generate_transfer_response",
+                name="Generate Transfer Response",
+                node_type="Operation",
+            ),
 
-###############################################################
-# Parser
-###############################################################
+        "transfer_funds":
+            DomainNode(
+                id="transfer_funds",
+                name="Transfer Funds",
+                node_type="Operation",
+            ),
+    }
 
-parser = WorkflowPromptParser()
+    relationships = [
 
-###############################################################
-# Embeddings
-###############################################################
+        DomainRelationship(
+            "validate_transfer",
+            "check_balance",
+            "OPERATION_PRECEDES",
+        ),
 
-embedding_service = EmbeddingService(
-    EMBEDDING_MODEL
-)
+        DomainRelationship(
+            "check_balance",
+            "process_transfer",
+            "OPERATION_PRECEDES",
+        ),
 
-###############################################################
-# Prompt Graph Builder
-###############################################################
+        DomainRelationship(
+            "process_transfer",
+            "generate_transfer_response",
+            "OPERATION_PRECEDES",
+        ),
 
-prompt_graph_builder = PromptGraphBuilder(embedding_service)
+        DomainRelationship(
+            "validate_transfer",
+            "transfer_funds",
+            "OPERATION_PRECEDES",
+        ),
 
-###############################################################
-# Domain Graph
-###############################################################
+        DomainRelationship(
+            "transfer_funds",
+            "generate_transfer_response",
+            "OPERATION_PRECEDES",
+        ),
+    ]
 
-domain_graph = load_graph(
-    DOMAIN_GRAPH
-)
+    return InMemoryDomainGraph(
+        nodes,
+        relationships,
+    )
 
-###############################################################
-# Matcher
-###############################################################
 
-graph_matcher = GraphMatcher(
-    embedding_service,
-    domain_graph
-)
+def main():
 
-###############################################################
-# Beam Search Planner
-###############################################################
+    # ---------------------------------------------------------
+    # Get prompt
+    # ---------------------------------------------------------
 
-beam_planner = BeamSearchPlanner(
-    beam_width=BEAM_WIDTH
-)
+    if len(sys.argv) > 1:
 
-###############################################################
-# Planner
-###############################################################
+        prompt = " ".join(
+            sys.argv[1:]
+        )
 
-planner = GraphPlanner()
+    else:
 
-###############################################################
-# Function Matcher
-###############################################################
+        prompt = input(
+            "Enter workflow prompt: "
+        ).strip()
 
-function_matcher = FunctionMatcher(
-    EMBEDDING_MODEL
-)
+    if not prompt:
 
-function_matcher.load(
-    FUNCTIONS
-)
+        print("No prompt supplied.")
 
-###############################################################
-# Workflow Generator
-###############################################################
+        return
 
-generator = WorkflowGenerator(
-    function_matcher
-)
+    print(
+        f"\nUser prompt:\n{prompt}\n"
+    )
 
-###############################################################
-# PROMPT
-###############################################################
+    # ---------------------------------------------------------
+    # LLM
+    # ---------------------------------------------------------
 
-prompt = input("\nEnter workflow prompt:\n> ")
+    llm_service = LLMService(
+        model=os.getenv(
+            "HF_MODEL",
+            "Qwen/Qwen2.5-7B-Instruct",
+        )
+    )
 
-###############################################################
-# STEP 1
-###############################################################
+    # ---------------------------------------------------------
+    # Embeddings
+    # ---------------------------------------------------------
 
-print("\n[1] Parsing Prompt...")
+    embedding_service = EmbeddingService(
+        os.getenv(
+            "EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+    )
 
-analysis = parser.parse(
-    prompt
-)
+    # ---------------------------------------------------------
+    # Domain graph
+    # ---------------------------------------------------------
 
-###############################################################
-# STEP 2
-###############################################################
+    domain_client = build_domain_graph()
 
-print("[2] Building Prompt Graph...")
+    # ---------------------------------------------------------
+    # Function matcher
+    # ---------------------------------------------------------
 
-prompt_graph = prompt_graph_builder.build(
-    analysis
-)
+    function_matcher = FunctionMatcher(
+        os.getenv(
+            "EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+    )
 
-###############################################################
-# STEP 3
-###############################################################
+    function_matcher.load(
+        os.getenv(
+            "FUNCTIONS_FILE",
+            "functions.json",
+        )
+    )
 
-print("[3] Matching Concepts (Top K candidates per action)...")
+    # ---------------------------------------------------------
+    # Pipeline
+    # ---------------------------------------------------------
 
-candidate_plan = graph_matcher.candidates(
-    prompt_graph,
-    k=TOP_K
-)
+    pipeline = WorkflowPipeline(
+        domain_client=domain_client,
+        embedding_service=embedding_service,
+        function_matcher=function_matcher,
+        llm_service=llm_service,
+        beam_width=3,
+        top_k=5,
+        neighborhood_depth=1,
+        verbose=True,
+    )
 
-graph_matcher.print_candidates(
-    candidate_plan
-)
+    # ---------------------------------------------------------
+    # Execute
+    # ---------------------------------------------------------
 
-###############################################################
-# STEP 4
-###############################################################
+    workflow, debug = pipeline.run(
+        prompt,
+        workflow_name="Generated Workflow",
+    )
 
-print("\n[4] Running Beam Search Planner...")
+    # ---------------------------------------------------------
+    # Result
+    # ---------------------------------------------------------
 
-search_result = beam_planner.search(
-    candidate_plan
-)
+    print(
+        "\n"
+        + "=" * 70
+    )
 
-beam_planner.print_search(
-    search_result
-)
+    print("FINAL WORKFLOW")
 
-###############################################################
-# STEP 5
-###############################################################
+    print(
+        "=" * 70
+    )
 
-print("\n[5] Expanding shortest domain paths...")
+    print(
+        json.dumps(
+            workflow,
+            indent=2,
+            default=str,
+        )
+    )
 
-workflow_graph = beam_planner.expand(
-    search_result
-)
 
-plan = planner.plan(
-    workflow_graph
-)
-
-planner.print_plan(
-    plan
-)
-
-###############################################################
-# STEP 6
-###############################################################
-
-print("\n[6] Generating Workflow JSON...")
-
-workflow = generator.generate(
-    plan,
-    workflow_name="Generated Workflow"
-)
-
-###############################################################
-# OUTPUT
-###############################################################
-
-print()
-
-print("=" * 70)
-print("Generated Workflow")
-print("=" * 70)
-
-print()
-
-print(json.dumps(
-    workflow,
-    indent=4
-))
+if __name__ == "__main__":
+    main()

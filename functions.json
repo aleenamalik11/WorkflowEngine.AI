@@ -1,309 +1,465 @@
 [
   {
-    "name": "FindStudent",
-    "description": "Finds a student using student id or student name.",
+    "name": "FindCustomer",
+    "description": "Finds a customer using customer id or customer information.",
     "inputs": [
-      "studentId"
+      "customerId"
     ],
     "outputs": [
-      "student"
+      "customer"
     ]
   },
   {
-    "name": "RegisterStudent",
-    "description": "Registers a new student in the school.",
+    "name": "RegisterCustomer",
+    "description": "Registers a new banking customer.",
     "inputs": [
-      "studentInfo"
+      "customerInfo"
     ],
     "outputs": [
-      "studentId"
+      "customerId"
     ]
   },
   {
-    "name": "UpdateStudent",
-    "description": "Updates an existing student's information.",
+    "name": "UpdateCustomer",
+    "description": "Updates an existing customer's information.",
     "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "success"
-    ]
-  },
-  {
-    "name": "DeleteStudent",
-    "description": "Deletes a student from the system.",
-    "inputs": [
-      "studentId"
+      "customer"
     ],
     "outputs": [
       "success"
     ]
   },
   {
-    "name": "FindCourse",
-    "description": "Finds a course using its identifier.",
+    "name": "DeleteCustomer",
+    "description": "Deletes or deactivates a customer record.",
     "inputs": [
-      "courseId"
-    ],
-    "outputs": [
-      "course"
-    ]
-  },
-  {
-    "name": "CreateCourse",
-    "description": "Creates a new course.",
-    "inputs": [
-      "courseInfo"
-    ],
-    "outputs": [
-      "courseId"
-    ]
-  },
-  {
-    "name": "UpdateCourse",
-    "description": "Updates course information.",
-    "inputs": [
-      "course"
+      "customerId"
     ],
     "outputs": [
       "success"
     ]
   },
   {
-    "name": "DeleteCourse",
-    "description": "Deletes a course.",
+    "name": "FindAccount",
+    "description": "Finds a bank account using its account identifier.",
     "inputs": [
-      "courseId"
+      "accountId"
+    ],
+    "outputs": [
+      "account"
+    ]
+  },
+  {
+    "name": "OpenAccount",
+    "description": "Opens a new bank account for a customer.",
+    "inputs": [
+      "customer",
+      "accountInfo"
+    ],
+    "outputs": [
+      "accountId"
+    ]
+  },
+  {
+    "name": "UpdateAccount",
+    "description": "Updates account information or account settings.",
+    "inputs": [
+      "account"
     ],
     "outputs": [
       "success"
     ]
   },
   {
-    "name": "CheckPrerequisites",
-    "description": "Checks whether a student satisfies all prerequisites for a course.",
+    "name": "CloseAccount",
+    "description": "Closes an existing bank account.",
     "inputs": [
-      "student",
-      "course"
+      "account"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "GetAccountBalance",
+    "description": "Retrieves the current available balance of an account.",
+    "inputs": [
+      "account"
+    ],
+    "outputs": [
+      "balance"
+    ]
+  },
+  {
+    "name": "DepositFunds",
+    "description": "Deposits money into a bank account.",
+    "inputs": [
+      "account",
+      "amount"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "WithdrawFunds",
+    "description": "Withdraws money from a bank account.",
+    "inputs": [
+      "account",
+      "amount"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "TransferFunds",
+    "description": "Transfers money between two bank accounts.",
+    "inputs": [
+      "sourceAccount",
+      "targetAccount",
+      "amount"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "FindTransaction",
+    "description": "Finds a banking transaction using its transaction identifier.",
+    "inputs": [
+      "transactionId"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "GetTransactionHistory",
+    "description": "Retrieves transaction history for an account.",
+    "inputs": [
+      "account"
+    ],
+    "outputs": [
+      "transactions"
+    ]
+  },
+  {
+    "name": "CancelTransaction",
+    "description": "Cancels an eligible banking transaction.",
+    "inputs": [
+      "transaction"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "ValidateCustomer",
+    "description": "Validates customer information and required banking details.",
+    "inputs": [
+      "customer"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "VerifyIdentity",
+    "description": "Verifies the identity of a banking customer.",
+    "inputs": [
+      "customer",
+      "identityInfo"
+    ],
+    "outputs": [
+      "verified"
+    ]
+  },
+  {
+    "name": "ValidateAccount",
+    "description": "Validates whether a bank account is active and usable.",
+    "inputs": [
+      "account"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "CheckAccountStatus",
+    "description": "Checks the current status of a bank account.",
+    "inputs": [
+      "account"
+    ],
+    "outputs": [
+      "accountStatus"
+    ]
+  },
+  {
+    "name": "CheckSufficientFunds",
+    "description": "Checks whether an account has sufficient funds for a transaction.",
+    "inputs": [
+      "account",
+      "amount"
+    ],
+    "outputs": [
+      "sufficient"
+    ]
+  },
+  {
+    "name": "CheckTransferEligibility",
+    "description": "Checks whether a transfer is allowed between two accounts.",
+    "inputs": [
+      "sourceAccount",
+      "targetAccount",
+      "amount"
     ],
     "outputs": [
       "eligible"
     ]
   },
   {
-    "name": "EnrollStudent",
-    "description": "Enrolls a student into a course.",
+    "name": "FindBeneficiary",
+    "description": "Finds a registered transfer beneficiary.",
     "inputs": [
-      "student",
-      "course"
+      "beneficiaryId"
     ],
     "outputs": [
-      "enrollment"
+      "beneficiary"
     ]
   },
   {
-    "name": "DropCourse",
-    "description": "Drops a student's enrollment from a course.",
+    "name": "AddBeneficiary",
+    "description": "Adds a beneficiary for a customer account.",
     "inputs": [
-      "student",
-      "course"
+      "account",
+      "beneficiaryInfo"
     ],
     "outputs": [
-      "success"
+      "beneficiaryId"
     ]
   },
   {
-    "name": "AssignTeacher",
-    "description": "Assigns a teacher to a course.",
+    "name": "RemoveBeneficiary",
+    "description": "Removes a beneficiary from an account.",
     "inputs": [
-      "teacher",
-      "course"
-    ],
-    "outputs": [
-      "success"
-    ]
-  },
-  {
-    "name": "FindTeacher",
-    "description": "Finds a teacher.",
-    "inputs": [
-      "teacherId"
-    ],
-    "outputs": [
-      "teacher"
-    ]
-  },
-  {
-    "name": "RegisterTeacher",
-    "description": "Registers a new teacher.",
-    "inputs": [
-      "teacherInfo"
-    ],
-    "outputs": [
-      "teacherId"
-    ]
-  },
-  {
-    "name": "ScheduleClass",
-    "description": "Schedules a class for a course.",
-    "inputs": [
-      "course",
-      "teacher"
-    ],
-    "outputs": [
-      "schedule"
-    ]
-  },
-  {
-    "name": "RecordAttendance",
-    "description": "Records attendance for a student.",
-    "inputs": [
-      "student",
-      "course",
-      "date"
-    ],
-    "outputs": [
-      "attendance"
-    ]
-  },
-  {
-    "name": "CalculateAttendance",
-    "description": "Calculates attendance percentage.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "attendancePercentage"
-    ]
-  },
-  {
-    "name": "CreateExam",
-    "description": "Creates an examination.",
-    "inputs": [
-      "course"
-    ],
-    "outputs": [
-      "exam"
-    ]
-  },
-  {
-    "name": "ScheduleExam",
-    "description": "Schedules an examination.",
-    "inputs": [
-      "exam"
-    ],
-    "outputs": [
-      "schedule"
-    ]
-  },
-  {
-    "name": "RecordMarks",
-    "description": "Stores marks obtained by a student.",
-    "inputs": [
-      "student",
-      "exam",
-      "marks"
+      "beneficiary"
     ],
     "outputs": [
       "success"
     ]
   },
   {
-    "name": "CalculateGPA",
-    "description": "Calculates GPA of a student.",
+    "name": "CreatePayment",
+    "description": "Creates a payment instruction from a bank account.",
     "inputs": [
-      "student"
+      "account",
+      "paymentInfo"
     ],
     "outputs": [
-      "gpa"
+      "payment"
     ]
   },
   {
-    "name": "GenerateTranscript",
-    "description": "Generates transcript for a student.",
+    "name": "ProcessPayment",
+    "description": "Processes an eligible payment.",
     "inputs": [
-      "student"
+      "payment"
     ],
     "outputs": [
-      "transcript"
+      "transaction"
     ]
   },
   {
-    "name": "GenerateReportCard",
-    "description": "Generates report card.",
+    "name": "RefundPayment",
+    "description": "Refunds an eligible payment.",
     "inputs": [
-      "student"
+      "payment"
     ],
     "outputs": [
-      "reportCard"
+      "transaction"
     ]
   },
   {
-    "name": "CollectFees",
-    "description": "Collects tuition fees from a student.",
+    "name": "CheckPaymentStatus",
+    "description": "Checks the current status of a payment.",
     "inputs": [
-      "student",
+      "payment"
+    ],
+    "outputs": [
+      "paymentStatus"
+    ]
+  },
+  {
+    "name": "IssueCard",
+    "description": "Issues a debit or credit card for a customer account.",
+    "inputs": [
+      "account",
+      "cardInfo"
+    ],
+    "outputs": [
+      "card"
+    ]
+  },
+  {
+    "name": "FindCard",
+    "description": "Finds a banking card using its identifier.",
+    "inputs": [
+      "cardId"
+    ],
+    "outputs": [
+      "card"
+    ]
+  },
+  {
+    "name": "ActivateCard",
+    "description": "Activates an issued banking card.",
+    "inputs": [
+      "card"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "BlockCard",
+    "description": "Blocks a banking card to prevent further transactions.",
+    "inputs": [
+      "card"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "UnblockCard",
+    "description": "Unblocks an eligible banking card.",
+    "inputs": [
+      "card"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "CreateLoanApplication",
+    "description": "Creates a loan application for a customer.",
+    "inputs": [
+      "customer",
+      "loanInfo"
+    ],
+    "outputs": [
+      "loanApplication"
+    ]
+  },
+  {
+    "name": "ValidateLoanApplication",
+    "description": "Validates a loan application against required criteria.",
+    "inputs": [
+      "loanApplication"
+    ],
+    "outputs": [
+      "valid"
+    ]
+  },
+  {
+    "name": "ApproveLoan",
+    "description": "Approves an eligible loan application.",
+    "inputs": [
+      "loanApplication"
+    ],
+    "outputs": [
+      "loan"
+    ]
+  },
+  {
+    "name": "RejectLoan",
+    "description": "Rejects a loan application that does not meet approval criteria.",
+    "inputs": [
+      "loanApplication"
+    ],
+    "outputs": [
+      "success"
+    ]
+  },
+  {
+    "name": "DisburseLoan",
+    "description": "Disburses an approved loan amount to an account.",
+    "inputs": [
+      "loan",
+      "account"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "MakeLoanPayment",
+    "description": "Records a payment toward an outstanding loan.",
+    "inputs": [
+      "loan",
       "amount"
+    ],
+    "outputs": [
+      "transaction"
+    ]
+  },
+  {
+    "name": "GetLoanBalance",
+    "description": "Retrieves the outstanding balance of a loan.",
+    "inputs": [
+      "loan"
+    ],
+    "outputs": [
+      "balance"
+    ]
+  },
+  {
+    "name": "CreateDeposit",
+    "description": "Creates a deposit record for a customer account.",
+    "inputs": [
+      "account",
+      "amount"
+    ],
+    "outputs": [
+      "deposit"
+    ]
+  },
+  {
+    "name": "CreateWithdrawal",
+    "description": "Creates a withdrawal request for a customer account.",
+    "inputs": [
+      "account",
+      "amount"
+    ],
+    "outputs": [
+      "withdrawal"
+    ]
+  },
+  {
+    "name": "GenerateStatement",
+    "description": "Generates a bank statement for an account.",
+    "inputs": [
+      "account",
+      "period"
+    ],
+    "outputs": [
+      "statement"
+    ]
+  },
+  {
+    "name": "GenerateTransactionReceipt",
+    "description": "Generates a receipt for a completed transaction.",
+    "inputs": [
+      "transaction"
     ],
     "outputs": [
       "receipt"
     ]
   },
   {
-    "name": "CheckFeeStatus",
-    "description": "Checks whether fees are pending.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "feeStatus"
-    ]
-  },
-  {
-    "name": "GenerateFeeInvoice",
-    "description": "Generates fee invoice.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "invoice"
-    ]
-  },
-  {
-    "name": "IssueLibraryBook",
-    "description": "Issues a library book.",
-    "inputs": [
-      "student",
-      "book"
-    ],
-    "outputs": [
-      "issueRecord"
-    ]
-  },
-  {
-    "name": "ReturnLibraryBook",
-    "description": "Returns a library book.",
-    "inputs": [
-      "issueRecord"
-    ],
-    "outputs": [
-      "success"
-    ]
-  },
-  {
-    "name": "ReserveLibraryBook",
-    "description": "Reserves a library book.",
-    "inputs": [
-      "student",
-      "book"
-    ],
-    "outputs": [
-      "reservation"
-    ]
-  },
-  {
     "name": "SendEmail",
-    "description": "Sends an email notification.",
+    "description": "Sends an email notification to a banking customer.",
     "inputs": [
       "recipient",
       "subject",
@@ -315,7 +471,7 @@
   },
   {
     "name": "SendSMS",
-    "description": "Sends an SMS notification.",
+    "description": "Sends an SMS notification to a banking customer.",
     "inputs": [
       "recipient",
       "message"
@@ -325,10 +481,10 @@
     ]
   },
   {
-    "name": "NotifyStudent",
-    "description": "Notifies a student about an event.",
+    "name": "NotifyCustomer",
+    "description": "Notifies a customer about a banking event.",
     "inputs": [
-      "student",
+      "customer",
       "message"
     ],
     "outputs": [
@@ -336,85 +492,35 @@
     ]
   },
   {
-    "name": "NotifyTeacher",
-    "description": "Notifies a teacher.",
+    "name": "AuditTransaction",
+    "description": "Stores an audit log entry for a banking transaction or operation.",
     "inputs": [
-      "teacher",
-      "message"
+      "action",
+      "transaction"
     ],
     "outputs": [
       "success"
     ]
   },
   {
-    "name": "ValidateEnrollment",
-    "description": "Validates whether enrollment is allowed.",
+    "name": "FlagSuspiciousTransaction",
+    "description": "Flags a transaction for fraud or compliance review.",
     "inputs": [
-      "student",
-      "course"
+      "transaction"
     ],
     "outputs": [
-      "valid"
+      "flag"
     ]
   },
   {
-    "name": "ValidateStudent",
-    "description": "Validates student information.",
+    "name": "CreateComplianceCase",
+    "description": "Creates a compliance review case for a customer or transaction.",
     "inputs": [
-      "student"
+      "customer",
+      "transaction"
     ],
     "outputs": [
-      "valid"
-    ]
-  },
-  {
-    "name": "ValidateCourse",
-    "description": "Validates course information.",
-    "inputs": [
-      "course"
-    ],
-    "outputs": [
-      "valid"
-    ]
-  },
-  {
-    "name": "ArchiveStudent",
-    "description": "Archives graduated or inactive students.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "success"
-    ]
-  },
-  {
-    "name": "GraduateStudent",
-    "description": "Graduates a student after completing all requirements.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "degree"
-    ]
-  },
-  {
-    "name": "GenerateCertificate",
-    "description": "Generates a completion certificate.",
-    "inputs": [
-      "student"
-    ],
-    "outputs": [
-      "certificate"
-    ]
-  },
-  {
-    "name": "AuditLog",
-    "description": "Stores an audit log entry for an executed operation.",
-    "inputs": [
-      "action"
-    ],
-    "outputs": [
-      "success"
+      "complianceCase"
     ]
   }
 ]
