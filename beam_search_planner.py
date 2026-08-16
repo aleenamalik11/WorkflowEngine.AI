@@ -14,6 +14,20 @@ No Dijkstra.
 No shortest-path search.
 
 Relationship information is used locally only.
+
+IMPORTANT -- selection order vs. execution order:
+
+`search()` returns a `selection` list ordered by MATCHING/PROCESSING
+order (the order semantic steps were evaluated in, e.g. the order the
+LLM emitted `steps` in). That order is NOT an execution-order claim.
+`expand()` must never treat two nodes being adjacent in `selection` as
+"selection[i] happens before selection[i+1]" -- execution order comes
+only from real directed relationships: domain-graph edges (Neo4j
+ontology relationships) and PROMPT_DEPENDENCY edges (resolved from the
+LLM's stated dependencies, added upstream in
+contextual_subgraph_builder.py and present in `domain_graph` by the
+time it reaches `expand()`). See the comment in `expand()` for the
+concrete cycle this used to produce when that rule was violated.
 """
 
 import networkx as nx
@@ -674,59 +688,47 @@ class BeamSearchPlanner:
                 )
 
         # -----------------------------------------------------
-        # Prompt-order edges.
+        # NOTE: there is intentionally no "prompt-order" /
+        # list-adjacency fallback here anymore.
         #
-        # Add these only when there is no ontology edge between
-        # the selected concepts.
+        # `selection` (and therefore `selected_ids`) is ordered by
+        # MATCHING/PROCESSING order -- the order semantic steps were
+        # evaluated in -- not by execution order. Two nodes being
+        # adjacent in that list carries no information about which
+        # one must run first. The previous version of this method
+        # treated adjacency as
+        #     selected_ids[i] --PROMPT_PRECEDES--> selected_ids[i+1]
+        # which was an architectural bug: it fabricated a directed
+        # edge out of an accident of list position, and that edge
+        # could directly contradict real domain relationships or
+        # PROMPT_DEPENDENCY edges already copied in above (which DO
+        # represent genuine ordering, resolved from Neo4j
+        # relationships and the LLM's stated dependencies
+        # respectively). Concretely, for "create a new account" this
+        # produced:
+        #     Create Account --PROMPT_PRECEDES--> Validate User
+        #     Validate User  --PROMPT_DEPENDENCY--> Create User
+        #     Create User    --PROMPT_DEPENDENCY--> Create Account
+        # a cycle -- even though "Create Account" was simply the
+        # first entry in the selection list because it was the
+        # direct match for the whole prompt, not because it executes
+        # first. A `nx.has_path()` guard could suppress that specific
+        # symptom, but the correct fix is to never generate the
+        # ordering claim in the first place.
         #
-        # This avoids blindly overwriting domain semantics.
+        # Execution order must come ONLY from edges that actually
+        # assert an ordering claim: real domain-graph relationships
+        # (added above) and PROMPT_DEPENDENCY edges (added upstream
+        # in contextual_subgraph_builder.py, already present in
+        # `domain_graph` and therefore already copied in above). A
+        # selected node with no such relationship to any other
+        # selected node is a genuine orphan: it stays in the graph as
+        # an unordered node -- GraphPlanner.plan()'s topological sort
+        # places nodes with no edges without needing one -- and no
+        # edge is invented for it. If a caller needs orphans wired to
+        # an explicit start/end, that must be its own explicit
+        # graph-construction step, never inferred from selection-list
+        # position.
         # -----------------------------------------------------
-
-        for index in range(
-            len(selected_ids) - 1
-        ):
-
-            source = selected_ids[
-                index
-            ]
-
-            target = selected_ids[
-                index + 1
-            ]
-
-            if source == target:
-                continue
-
-            if graph.has_edge(
-                source,
-                target,
-            ):
-                continue
-
-            # If the domain graph explicitly says the opposite
-            # direction, don't create an immediate cycle here.
-            if graph.has_edge(
-                target,
-                source,
-            ):
-                continue
-
-            graph.add_edge(
-                source,
-                target,
-                relation=(
-                    "PROMPT_PRECEDES"
-                ),
-                origin=(
-                    "beam_selection"
-                ),
-                inferred_context=True,
-                edge_type="mandatory",
-                weight=0.0,
-                classification=(
-                    "REQUIRED"
-                ),
-                traverses_for_ordering=True,
-            )
 
         return graph

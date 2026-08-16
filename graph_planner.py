@@ -44,13 +44,22 @@ class GraphPlanner:
     @staticmethod
     def _describe_cycle(graph):
         try:
-            cycle_nodes = nx.find_cycle(graph)
+            cycle_edges = nx.find_cycle(graph)
         except nx.NetworkXNoCycle:
             return "(cycle detected by topological_sort but not reproducible via find_cycle)"
-        names = [
-            f"{graph.nodes[s].get('name', s)} --{d.get('relation', '?')}--> {graph.nodes[t].get('name', t)}"
-            for s, t, d in cycle_nodes
-        ]
+        # nx.find_cycle() on a DiGraph returns 2-tuples (u, v), not
+        # (u, v, data) -- edge data has to be looked up separately. The
+        # previous version unpacked these as 3-tuples, which raised
+        # "ValueError: not enough values to unpack (expected 3, got 2)"
+        # for every prompt whose workflow graph actually contained a
+        # cycle, masking the real PlanningError.
+        names = []
+        for s, t in cycle_edges:
+            edge_data = graph.edges[s, t]
+            names.append(
+                f"{graph.nodes[s].get('name', s)} --{edge_data.get('relation', '?')}--> "
+                f"{graph.nodes[t].get('name', t)}"
+            )
         return " ; ".join(names)
 
     @staticmethod
