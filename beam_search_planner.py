@@ -29,12 +29,33 @@ Important architectural distinction:
 The order of ``selection`` is the order in which semantic prompt steps
 were processed by beam search. It is NOT an execution-order claim.
 
-Execution order comes from actual directed graph relationships:
+Execution order comes from actual ordering relationships:
 
     - OPERATION_PRECEDES
-    - OPERATION_INCLUDES
     - PROMPT_DEPENDENCY
-    - other explicitly ordering relationships
+    - PROMPT_PRECEDES
+
+OPERATION_INCLUDES is intentionally NOT treated as an execution-order
+relationship.
+
+It represents structural/domain composition:
+
+    Register User
+        |
+        | OPERATION_INCLUDES
+        v
+    Verify User Exists
+
+This means that Verify User Exists is part of Register User's domain
+structure. It does NOT by itself establish:
+
+    Register User -> Verify User Exists
+
+as an execution sequence.
+
+This distinction is important because prompt dependencies can establish
+an explicit execution order that is different from the structural
+"includes" relationship.
 
 Context relationships such as:
 
@@ -54,14 +75,13 @@ RULE_CONSTRAINS is special:
     Rule nodes are not executable workflow nodes.
 
     However, rules constrain operations and therefore MUST participate
-    in candidate evaluation. A candidate operation that conflicts with
-    an explicitly referenced domain rule receives a strong penalty and
-    may be rejected.
+    in candidate evaluation.
 
 No Dijkstra.
 No shortest-path search.
 No synthetic ordering from beam-selection adjacency.
 """
+
 
 import re
 
@@ -74,20 +94,29 @@ class BeamSearchPlanner:
     # Relationship categories
     # ============================================================
 
-    # Relationships that directly connect executable operations or
-    # describe execution-related structure.
+    # Relationships that can participate in actual execution ordering.
     #
-    # These are allowed to contribute strongly to candidate
-    # compatibility and workflow connectivity.
-    EXECUTION_RELATIONSHIPS = {
-        "COMPONENT_EXECUTES",
-        "ACTOR_PERFORMS",
-        "ACTOR_REQUESTS",
-        "OPERATION_INCLUDES",
+    # IMPORTANT:
+    #
+    # OPERATION_INCLUDES is intentionally NOT here.
+    #
+    # "includes" is a structural/domain relationship and does not
+    # necessarily mean that the source operation executes before
+    # the included operation.
+    ORDERING_RELATIONSHIPS = {
         "OPERATION_PRECEDES",
-        "EVENT_TRIGGERS",
         "PROMPT_DEPENDENCY",
         "PROMPT_PRECEDES",
+    }
+
+    # Relationships between executable operations that are useful
+    # for determining whether two operations belong to the same
+    # domain workflow, but which do NOT themselves establish
+    # execution order.
+    #
+    # OPERATION_INCLUDES belongs here.
+    STRUCTURAL_RELATIONSHIPS = {
+        "OPERATION_INCLUDES",
     }
 
     # Relationships that describe domain context.
@@ -140,15 +169,22 @@ class BeamSearchPlanner:
         "rule",
     }
 
-    # Beam scoring weights.
-    #
-    # Candidate score is already a semantic/lexical score produced
-    # upstream. These values determine how much graph structure
-    # influences the global combination.
+    # ============================================================
+    # Beam scoring weights
+    # ============================================================
+
     CONNECTIVITY_BONUS = 0.20
+
     REQUIRED_RELATION_BONUS = 0.25
+
     POSSIBLE_RELATION_BONUS = 0.08
+
     CONTEXT_RELATION_BONUS = 0.03
+
+    # Structural relationships such as OPERATION_INCLUDES are useful
+    # evidence that two operations belong to the same domain process,
+    # but they are weaker than explicit execution-order relationships.
+    STRUCTURAL_RELATION_BONUS = 0.12
 
     # Strong penalty for a candidate that conflicts with a domain rule.
     RULE_CONTRADICTION_PENALTY = 0.75
@@ -160,7 +196,7 @@ class BeamSearchPlanner:
     # Small penalty for inferred/neighborhood candidates.
     INFERRED_PENALTY = 0.03
 
-    # Explicit direct prompt matches receive a small preference.
+    # Explicit direct matches receive a small preference.
     EXPLICIT_DIRECT_BONUS = 0.15
 
     def __init__(
@@ -169,9 +205,7 @@ class BeamSearchPlanner:
         max_candidates_per_step=10,
     ):
         self.beam_width = beam_width
-        self.max_candidates_per_step = (
-            max_candidates_per_step
-        )
+        self.max_candidates_per_step = max_candidates_per_step
 
     # ============================================================
     # Stage 8 - Beam Search
@@ -184,43 +218,33 @@ class BeamSearchPlanner:
         """
         Perform global beam search over semantic-step candidates.
 
-        The important point is that beam search does NOT merely ask:
+        Beam search does NOT simply select the highest-scoring
+        candidate independently for every prompt step.
 
-            "What is the best node for this prompt step?"
+        Instead it evaluates combinations of candidates using:
 
-        Instead it asks:
-
-            "What combination of candidate operations gives the
-             strongest overall workflow?"
-
-        Each candidate therefore receives:
-
-            semantic/lexical score
-                +
+            semantic similarity
+            lexical similarity
             graph connectivity
-                +
             relationship compatibility
-                -
-            disconnectedness
-                -
-            rule contradictions
-                +
-            explicit/direct-match preference
+            rule constraints
+            contradiction penalties
 
-        Beam search retains the best globally coherent combinations.
+        The purpose is to find a globally coherent combination
+        of executable domain operations.
+
+        IMPORTANT:
+
+        The order of ``selection`` is ONLY matching/processing order.
+
+        It is never interpreted as execution order.
         """
 
-        semantic_steps = candidate_plan[
-            "semantic_steps"
-        ]
+        semantic_steps = candidate_plan["semantic_steps"]
 
-        candidate_map = candidate_plan[
-            "candidate_map"
-        ]
+        candidate_map = candidate_plan["candidate_map"]
 
-        domain_graph = candidate_plan[
-            "domain_graph"
-        ]
+        domain_graph = candidate_plan["domain_graph"]
 
         beams = [
             {
@@ -234,27 +258,22 @@ class BeamSearchPlanner:
         # --------------------------------------------------------
         # Process semantic steps.
         #
-        # This order is MATCHING/PROCESSING order only.
-        # It is never used as execution order.
+        # This is matching/processing order only.
+        # It is NOT execution order.
         # --------------------------------------------------------
 
-        for step_index, step in enumerate(
-            semantic_steps
-        ):
+        for step_index, step in enumerate(semantic_steps):
+
             candidates = candidate_map.get(
                 step_index,
                 [],
             )
 
             # ----------------------------------------------------
-            # Critical restriction:
+            # Only executable Operation nodes are eligible.
             #
-            # Only executable Operation nodes are eligible for
-            # workflow selection.
-            #
-            # Context entities such as Account, Customer, Balance,
-            # Rule, etc. may remain in the contextual domain graph,
-            # but they cannot become workflow steps.
+            # Account, Customer, Balance, Rule, Event, etc.
+            # cannot become workflow execution steps.
             # ----------------------------------------------------
 
             candidates = [
@@ -267,11 +286,7 @@ class BeamSearchPlanner:
             ]
 
             if not candidates:
-                # Do not invent a function/node just to keep the
-                # beam alive.
-                #
-                # The semantic step remains unresolved and should
-                # ultimately be surfaced by downstream validation.
+                # Do not invent a replacement operation.
                 continue
 
             candidates = candidates[
@@ -284,18 +299,13 @@ class BeamSearchPlanner:
 
                 for candidate in candidates:
 
-                    node_id = candidate[
-                        "node_id"
-                    ]
+                    node_id = candidate["node_id"]
 
                     # ------------------------------------------------
-                    # Never select the same operation twice for two
-                    # semantic steps.
+                    # Do not select the same operation twice.
                     # ------------------------------------------------
 
-                    if node_id in beam[
-                        "selected_ids"
-                    ]:
+                    if node_id in beam["selected_ids"]:
                         continue
 
                     candidate_score = float(
@@ -306,48 +316,31 @@ class BeamSearchPlanner:
                     )
 
                     # ------------------------------------------------
-                    # Graph compatibility.
+                    # Relationship compatibility.
                     # ------------------------------------------------
 
                     relationship_score = (
                         self._relationship_compatibility(
                             domain_graph,
-                            beam[
-                                "selected_ids"
-                            ],
+                            beam["selected_ids"],
                             node_id,
                         )
                     )
 
                     # ------------------------------------------------
-                    # Connectivity.
-                    #
-                    # This is different from relationship scoring.
-                    #
-                    # We want the beam to prefer combinations where
-                    # selected operations actually participate in the
-                    # same domain structure.
+                    # Graph connectivity.
                     # ------------------------------------------------
 
                     connectivity_score = (
                         self._connectivity_score(
                             domain_graph,
-                            beam[
-                                "selected_ids"
-                            ],
+                            beam["selected_ids"],
                             node_id,
                         )
                     )
 
                     # ------------------------------------------------
                     # Rule constraints.
-                    #
-                    # RULE_CONSTRAINS does NOT add a Rule node to the
-                    # workflow.
-                    #
-                    # Instead, the rule is inspected to determine
-                    # whether this operation is compatible with the
-                    # prompt.
                     # ------------------------------------------------
 
                     constraint_penalty, violations = (
@@ -366,10 +359,7 @@ class BeamSearchPlanner:
 
                     if (
                         bool(step.explicit)
-                        and candidate.get(
-                            "source"
-                        )
-                        == "direct"
+                        and candidate.get("source") == "direct"
                     ):
                         explicit_bonus = (
                             self.EXPLICIT_DIRECT_BONUS
@@ -381,32 +371,28 @@ class BeamSearchPlanner:
 
                     inferred_penalty = 0.0
 
-                    if candidate.get(
-                        "source"
-                    ) == "neighborhood":
+                    if candidate.get("source") == "neighborhood":
                         inferred_penalty = (
                             self.INFERRED_PENALTY
                         )
 
                     # ------------------------------------------------
                     # Disconnected candidate penalty.
-                    #
-                    # The candidate is not automatically rejected,
-                    # because an operation may legitimately be an
-                    # independent branch. But an unrelated operation
-                    # should lose against a connected alternative.
                     # ------------------------------------------------
 
                     disconnected_penalty = 0.0
 
                     if (
                         beam["selected_ids"]
-                        and connectivity_score
-                        <= 0.0
+                        and connectivity_score <= 0.0
                     ):
                         disconnected_penalty = (
                             self.DISCONNECTED_PENALTY
                         )
+
+                    # ------------------------------------------------
+                    # Final candidate contribution.
+                    # ------------------------------------------------
 
                     total_increment = (
                         candidate_score
@@ -423,105 +409,77 @@ class BeamSearchPlanner:
 
                         "domain_node_id": node_id,
 
-                        "domain_node_name":
+                        "domain_node_name": candidate.get(
+                            "name",
+                            node_id,
+                        ),
+
+                        "domain_node_type": candidate.get(
+                            "node_type"
+                        ),
+
+                        "explicit": bool(
+                            step.explicit
+                        ),
+
+                        "inferred": bool(
                             candidate.get(
-                                "name",
-                                node_id,
-                            ),
+                                "inferred",
+                                not step.explicit,
+                            )
+                        ),
 
-                        "domain_node_type":
-                            candidate.get(
-                                "node_type"
-                            ),
+                        "source": candidate.get(
+                            "source",
+                            "direct",
+                        ),
 
-                        "explicit":
-                            bool(
-                                step.explicit
-                            ),
+                        "semantic_score": candidate.get(
+                            "semantic_score",
+                            0.0,
+                        ),
 
-                        "inferred":
-                            bool(
-                                candidate.get(
-                                    "inferred",
-                                    not step.explicit,
-                                )
-                            ),
+                        "lexical_score": candidate.get(
+                            "lexical_score",
+                            0.0,
+                        ),
 
-                        "source":
-                            candidate.get(
-                                "source",
-                                "direct",
-                            ),
+                        "candidate_score": candidate_score,
 
-                        "semantic_score":
-                            candidate.get(
-                                "semantic_score",
-                                0.0,
-                            ),
+                        "relationship_score": relationship_score,
 
-                        "lexical_score":
-                            candidate.get(
-                                "lexical_score",
-                                0.0,
-                            ),
+                        "connectivity_score": connectivity_score,
 
-                        "candidate_score":
-                            candidate_score,
+                        "constraint_penalty": constraint_penalty,
 
-                        "relationship_score":
-                            relationship_score,
-
-                        "connectivity_score":
-                            connectivity_score,
-
-                        "constraint_penalty":
-                            constraint_penalty,
-
-                        "constraint_violations":
-                            violations,
+                        "constraint_violations": violations,
                     }
 
                     new_beams.append(
                         {
-                            "selection":
-                                beam[
-                                    "selection"
-                                ]
-                                + [
-                                    selection_item
-                                ],
+                            "selection": (
+                                beam["selection"]
+                                + [selection_item]
+                            ),
 
-                            "selected_ids":
-                                beam[
-                                    "selected_ids"
-                                ]
-                                + [
-                                    node_id
-                                ],
+                            "selected_ids": (
+                                beam["selected_ids"]
+                                + [node_id]
+                            ),
 
-                            "score":
-                                beam[
-                                    "score"
-                                ]
-                                + total_increment,
+                            "score": (
+                                beam["score"]
+                                + total_increment
+                            ),
 
-                            "constraint_violations":
-                                (
-                                    beam[
-                                        "constraint_violations"
-                                    ]
-                                    + violations
-                                ),
+                            "constraint_violations": (
+                                beam[
+                                    "constraint_violations"
+                                ]
+                                + violations
+                            ),
                         }
                     )
-
-            # ----------------------------------------------------
-            # If every candidate was already selected, do not
-            # silently substitute another operation.
-            #
-            # The semantic step is unresolved rather than being
-            # assigned an arbitrary operation.
-            # ----------------------------------------------------
 
             if not new_beams:
                 continue
@@ -530,15 +488,12 @@ class BeamSearchPlanner:
             # Deduplicate equivalent beam states.
             # ----------------------------------------------------
 
-            new_beams = (
-                self._deduplicate_beams(
-                    new_beams
-                )
+            new_beams = self._deduplicate_beams(
+                new_beams
             )
 
             new_beams.sort(
-                key=lambda beam:
-                    beam["score"],
+                key=lambda beam: beam["score"],
                 reverse=True,
             )
 
@@ -554,9 +509,7 @@ class BeamSearchPlanner:
 
         return {
             "beam": beams,
-            "selection": beams[0][
-                "selection"
-            ],
+            "selection": beams[0]["selection"],
         }
 
     # ============================================================
@@ -571,16 +524,6 @@ class BeamSearchPlanner:
     ):
         """
         Return True only for actual Operation nodes.
-
-        This prevents contextual concepts such as:
-
-            Account
-            Customer
-            Balance
-            Rule
-            Event
-
-        from becoming workflow execution steps.
         """
 
         node_id = candidate.get(
@@ -593,17 +536,11 @@ class BeamSearchPlanner:
         if not graph.has_node(node_id):
             return False
 
-        node_data = graph.nodes[
-            node_id
-        ]
+        node_data = graph.nodes[node_id]
 
         node_type = (
-            candidate.get(
-                "node_type"
-            )
-            or node_data.get(
-                "node_type"
-            )
+            candidate.get("node_type")
+            or node_data.get("node_type")
         )
 
         if node_type in cls.EXECUTABLE_NODE_TYPES:
@@ -612,10 +549,6 @@ class BeamSearchPlanner:
         if node_type in cls.NON_EXECUTABLE_NODE_TYPES:
             return False
 
-        # Conservative fallback:
-        #
-        # If the node type is unknown, do not turn it into a workflow
-        # step merely because it scored well.
         return False
 
     # ============================================================
@@ -633,51 +566,48 @@ class BeamSearchPlanner:
         Score how well a candidate operation relates to already
         selected operations.
 
-        Direction is preserved.
+        IMPORTANT:
 
-        We do NOT pretend that every relationship means execution
-        order.
+        Relationship compatibility does NOT mean that every
+        relationship represents execution order.
 
         For example:
 
-            Update Account
+            Register User
                 |
-                | OPERATION_REQUIRES
+                | OPERATION_INCLUDES
                 v
-              Account
+            Verify User Exists
 
-        provides contextual compatibility, but Account is not an
-        executable workflow step.
+        means that Verify User Exists is part of the structure
+        of Register User.
 
-        Conversely:
+        It does NOT necessarily mean:
 
-            Validate User
-                |
-                | OPERATION_PRECEDES
-                v
-            Create User
+            Register User -> Verify User Exists
 
-        is a genuine execution relationship.
+        Therefore OPERATION_INCLUDES contributes a structural
+        compatibility score but is not treated as an execution
+        dependency.
         """
 
         if not selected_ids:
             return 0.0
 
-        if not graph.has_node(
-            candidate_id
-        ):
+        if not graph.has_node(candidate_id):
             return 0.0
 
         best_score = 0.0
 
         for selected_id in selected_ids:
 
-            if not graph.has_node(
-                selected_id
-            ):
+            if not graph.has_node(selected_id):
                 continue
 
+            # ----------------------------------------------------
             # selected -> candidate
+            # ----------------------------------------------------
+
             if graph.has_edge(
                 selected_id,
                 candidate_id,
@@ -694,7 +624,10 @@ class BeamSearchPlanner:
                     ),
                 )
 
+            # ----------------------------------------------------
             # candidate -> selected
+            # ----------------------------------------------------
+
             if graph.has_edge(
                 candidate_id,
                 selected_id,
@@ -727,15 +660,14 @@ class BeamSearchPlanner:
             "classification"
         )
 
-        if relation in {
-            "OPERATION_PRECEDES",
-            "PROMPT_DEPENDENCY",
-            "PROMPT_PRECEDES",
-        }:
+        # Explicit execution/dependency relationships are strongest.
+        if relation in cls.ORDERING_RELATIONSHIPS:
             return cls.REQUIRED_RELATION_BONUS
 
-        if relation == "OPERATION_INCLUDES":
-            return cls.REQUIRED_RELATION_BONUS
+        # OPERATION_INCLUDES is useful structural evidence,
+        # but it must not be interpreted as execution order.
+        if relation in cls.STRUCTURAL_RELATIONSHIPS:
+            return cls.STRUCTURAL_RELATION_BONUS
 
         if classification == "REQUIRED":
             return cls.REQUIRED_RELATION_BONUS
@@ -761,35 +693,28 @@ class BeamSearchPlanner:
     ):
         """
         Measure whether the candidate participates in the same
-        domain structure as selected operations.
+        domain structure as already-selected operations.
 
-        This is deliberately local.
+        This is NOT execution ordering.
 
-        Beam search is NOT performing shortest-path routing.
+        Beam search uses graph connectivity to prefer coherent
+        combinations.
 
-        A candidate receives a positive score when there is a direct
-        domain relationship to another selected operation.
-
-        Context relationships can provide a small compatibility
-        signal, but direct operation-to-operation relationships are
-        preferred.
+        Execution order is determined later from actual ordering
+        relationships.
         """
 
         if not selected_ids:
             return 0.0
 
-        if not graph.has_node(
-            candidate_id
-        ):
+        if not graph.has_node(candidate_id):
             return 0.0
 
         best = 0.0
 
         for selected_id in selected_ids:
 
-            if not graph.has_node(
-                selected_id
-            ):
+            if not graph.has_node(selected_id):
                 continue
 
             if graph.has_edge(
@@ -857,37 +782,46 @@ class BeamSearchPlanner:
             "node_type"
         )
 
-        # Strongest case:
-        #
+        # --------------------------------------------------------
         # Operation -> Operation
-        #
-        # This means the candidate actually participates in a
-        # relationship with another executable operation.
+        # --------------------------------------------------------
+
         if (
             source_type in cls.EXECUTABLE_NODE_TYPES
             and target_type in cls.EXECUTABLE_NODE_TYPES
         ):
-            if relation in {
-                "OPERATION_PRECEDES",
-                "OPERATION_INCLUDES",
-                "PROMPT_DEPENDENCY",
-                "PROMPT_PRECEDES",
-            }:
+
+            # Explicit ordering relationship.
+            if relation in cls.ORDERING_RELATIONSHIPS:
                 return cls.CONNECTIVITY_BONUS
+
+            # Structural operation relationship.
+            #
+            # This still tells beam search that the operations are
+            # related, but it is deliberately weaker because it
+            # does not establish execution order.
+            if relation in cls.STRUCTURAL_RELATIONSHIPS:
+                return (
+                    cls.CONNECTIVITY_BONUS
+                    * 0.60
+                )
 
             return (
                 cls.CONNECTIVITY_BONUS
                 * 0.50
             )
 
-        # Operation -> Entity or Rule -> Operation is contextual,
-        # not direct workflow connectivity.
-        #
-        # It can still provide a very small compatibility signal.
+        # --------------------------------------------------------
+        # Contextual relationship.
+        # --------------------------------------------------------
+
         if relation in cls.CONTEXT_RELATIONSHIPS:
-            return (
-                cls.CONTEXT_RELATION_BONUS
-            )
+            return cls.CONTEXT_RELATION_BONUS
+
+        # --------------------------------------------------------
+        # Rule relationships do not create workflow connectivity.
+        # They are handled by _rule_constraint_penalty().
+        # --------------------------------------------------------
 
         if relation in cls.CONSTRAINT_RELATIONSHIPS:
             return 0.0
@@ -908,42 +842,23 @@ class BeamSearchPlanner:
         """
         Check domain rules that constrain the candidate operation.
 
-        Important:
+        Rule nodes never become workflow steps.
 
-            Rule != workflow step.
+        They are used only as constraints during candidate evaluation.
 
-        A Rule node is only used as validation/context.
-
-        Expected graph structure:
+        Expected structure:
 
             Rule
               |
               | RULE_CONSTRAINS
               v
             Operation
-
-        The method performs two levels of checking:
-
-        1. Structural check:
-           Does the operation have domain rules attached to it?
-
-        2. Prompt-rule compatibility check:
-           Does the prompt explicitly reference terminology that
-           conflicts with the rule?
-
-        The implementation is intentionally conservative. A rule
-        should not invalidate a candidate merely because a rule
-        exists. It should only penalize a candidate when there is
-        evidence that the prompt is asking for a state/action that
-        conflicts with the rule.
         """
 
         if graph is None:
             return 0.0, []
 
-        if not graph.has_node(
-            operation_id
-        ):
+        if not graph.has_node(operation_id):
             return 0.0, []
 
         prompt_tokens = cls._tokenize(
@@ -960,19 +875,16 @@ class BeamSearchPlanner:
             operation_id,
             data=True,
         ):
+
             relation = edge.get(
                 "relation",
                 "",
             )
 
-            if relation not in (
-                cls.CONSTRAINT_RELATIONSHIPS
-            ):
+            if relation not in cls.CONSTRAINT_RELATIONSHIPS:
                 continue
 
-            if not graph.has_node(
-                rule_id
-            ):
+            if not graph.has_node(rule_id):
                 continue
 
             rule_data = graph.nodes[
@@ -995,74 +907,44 @@ class BeamSearchPlanner:
                 & rule_tokens
             )
 
-            # ----------------------------------------------------
-            # If the prompt and rule share no meaningful terms,
-            # there is not enough evidence to call it a violation.
-            # ----------------------------------------------------
-
             if not overlap:
                 continue
-
-            # ----------------------------------------------------
-            # Detect explicit negation / contradiction language.
-            #
-            # Examples:
-            #
-            #   "without active account"
-            #   "inactive account"
-            #   "do not validate"
-            #   "ignore the account status"
-            #
-            # This is deliberately conservative.
-            # ----------------------------------------------------
 
             if cls._prompt_contradicts_rule(
                 prompt_text,
                 rule_text,
             ):
+
                 violations.append(
                     {
-                        "rule_node_id":
+                        "rule_node_id": rule_id,
+
+                        "rule_name": rule_data.get(
+                            "name",
                             rule_id,
+                        ),
 
-                        "rule_name":
-                            rule_data.get(
-                                "name",
-                                rule_id,
-                            ),
+                        "operation_id": operation_id,
 
-                        "operation_id":
-                            operation_id,
+                        "relation": relation,
 
-                        "relation":
-                            relation,
+                        "overlap_terms": sorted(
+                            overlap
+                        ),
 
-                        "overlap_terms":
-                            sorted(
-                                overlap
-                            ),
+                        "rule_text": rule_text,
 
-                        "rule_text":
-                            rule_text,
-
-                        "reason":
+                        "reason": (
                             "Prompt appears to "
                             "contradict a domain "
                             "rule constraining "
-                            "this operation.",
+                            "this operation."
+                        ),
                     }
                 )
 
         if not violations:
             return 0.0, []
-
-        # --------------------------------------------------------
-        # Strong penalty.
-        #
-        # The candidate remains visible to beam search so debugging
-        # can show WHY it lost. But a contradictory candidate should
-        # normally lose against a valid alternative.
-        # --------------------------------------------------------
 
         penalty = (
             cls.RULE_CONTRADICTION_PENALTY
@@ -1124,10 +1006,9 @@ class BeamSearchPlanner:
         """
         Conservative contradiction detector.
 
-        This is not intended to replace a dedicated semantic
-        contradiction model.
-
-        It catches explicit negation patterns around shared concepts.
+        This is intentionally limited to explicit contradictions
+        rather than pretending that arbitrary natural-language
+        contradiction can be reliably detected by string matching.
         """
 
         prompt_normalized = (
@@ -1141,10 +1022,6 @@ class BeamSearchPlanner:
             .lower()
             .strip()
         )
-
-        # --------------------------------------------------------
-        # Explicit negation markers.
-        # --------------------------------------------------------
 
         negation_markers = (
             "not ",
@@ -1167,22 +1044,6 @@ class BeamSearchPlanner:
             for marker in negation_markers
         )
 
-        # --------------------------------------------------------
-        # Common opposing state patterns.
-        #
-        # These are useful for rules such as:
-        #
-        #   "account must be active"
-        #
-        # against:
-        #
-        #   "transfer from inactive account"
-        #
-        # This is intentionally small and explicit rather than
-        # pretending arbitrary natural-language contradiction can
-        # be solved reliably with string matching.
-        # --------------------------------------------------------
-
         opposites = {
             "active": {
                 "inactive",
@@ -1190,44 +1051,54 @@ class BeamSearchPlanner:
                 "blocked",
                 "deactivated",
             },
+
             "inactive": {
                 "active",
                 "enabled",
                 "activated",
             },
+
             "enabled": {
                 "disabled",
                 "inactive",
                 "blocked",
             },
+
             "disabled": {
                 "enabled",
                 "active",
             },
+
             "valid": {
                 "invalid",
                 "unverified",
             },
+
             "invalid": {
                 "valid",
                 "verified",
             },
+
             "verified": {
                 "unverified",
                 "invalid",
             },
+
             "approved": {
                 "rejected",
                 "denied",
             },
+
             "rejected": {
                 "approved",
             },
+
             "allowed": {
                 "forbidden",
                 "blocked",
                 "disallowed",
             },
+
             "forbidden": {
                 "allowed",
                 "permitted",
@@ -1243,12 +1114,14 @@ class BeamSearchPlanner:
         )
 
         # --------------------------------------------------------
-        # Check explicit opposite states.
+        # Opposite state detection.
         # --------------------------------------------------------
 
-        for rule_token, opposite_tokens in (
-            opposites.items()
-        ):
+        for (
+            rule_token,
+            opposite_tokens,
+        ) in opposites.items():
+
             if rule_token not in rule_tokens:
                 continue
 
@@ -1256,17 +1129,16 @@ class BeamSearchPlanner:
                 return True
 
         # --------------------------------------------------------
-        # If the prompt explicitly negates something that appears
-        # in the rule, treat it as a contradiction.
+        # Explicit negation detection.
         # --------------------------------------------------------
 
         if has_negation:
+
             shared = (
                 prompt_tokens
                 & rule_tokens
             )
 
-            # Remove extremely generic words.
             generic = {
                 "the",
                 "a",
@@ -1306,8 +1178,9 @@ class BeamSearchPlanner:
         Keep only the highest-scoring beam for an identical selected
         operation combination.
 
-        The order here is the semantic/matching order, NOT execution
-        order.
+        The ordering here is semantic/matching order.
+
+        It is NOT execution order.
         """
 
         best = {}
@@ -1315,9 +1188,7 @@ class BeamSearchPlanner:
         for beam in beams:
 
             key = tuple(
-                beam[
-                    "selected_ids"
-                ]
+                beam["selected_ids"]
             )
 
             existing = best.get(
@@ -1326,12 +1197,8 @@ class BeamSearchPlanner:
 
             if (
                 existing is None
-                or beam[
-                    "score"
-                ]
-                > existing[
-                    "score"
-                ]
+                or beam["score"]
+                > existing["score"]
             ):
                 best[key] = beam
 
@@ -1351,8 +1218,7 @@ class BeamSearchPlanner:
         """
         Convert the selected beam into the workflow graph.
 
-        Only selected executable Operation nodes are copied into the
-        workflow graph.
+        Only selected executable Operation nodes are copied.
 
         Contextual entities such as:
 
@@ -1360,19 +1226,52 @@ class BeamSearchPlanner:
             Customer
             Balance
             Rule
+            Event
 
-        are NOT copied as workflow nodes merely because they are
-        connected to an operation.
+        are NOT copied.
 
-        Their relationships can still be used during candidate
-        evaluation.
+        IMPORTANT:
 
-        The resulting graph contains only relationships between
-        selected executable operations.
+        Not every relationship between two Operation nodes is an
+        execution relationship.
 
-        No shortest-path search is performed.
+        Only explicit ordering/dependency relationships are copied
+        into the final workflow:
 
-        No selection-order edges are generated.
+            OPERATION_PRECEDES
+            PROMPT_DEPENDENCY
+            PROMPT_PRECEDES
+
+        Structural relationships such as:
+
+            OPERATION_INCLUDES
+
+        remain useful to beam search but are deliberately excluded
+        from the execution graph.
+
+        This prevents contradictions such as:
+
+            Register User
+                |
+                | OPERATION_INCLUDES
+                v
+            Verify User Exists
+
+        together with:
+
+            Verify User Exists
+                |
+                | PROMPT_DEPENDENCY
+                v
+            Register User
+
+        from being interpreted as a cycle.
+
+        The first relationship describes domain composition.
+
+        The second describes actual execution dependency.
+
+        Beam-selection order is never used to create edges.
         """
 
         if not search_result:
@@ -1411,9 +1310,10 @@ class BeamSearchPlanner:
             ):
                 continue
 
-            selected_ids.append(
-                node_id
-            )
+            if node_id not in selected_ids:
+                selected_ids.append(
+                    node_id
+                )
 
             if graph.has_node(
                 node_id
@@ -1422,54 +1322,67 @@ class BeamSearchPlanner:
 
             graph.add_node(
                 node_id,
+
                 name=item.get(
                     "domain_node_name",
                     node_id,
                 ),
+
                 node_type=item.get(
                     "domain_node_type",
                     "Operation",
                 ),
+
                 prompt_text=item.get(
                     "prompt_text",
                     "",
                 ),
+
                 explicit=item.get(
                     "explicit",
                     False,
                 ),
+
                 inferred=item.get(
                     "inferred",
                     False,
                 ),
+
                 source=item.get(
                     "source",
                     "direct",
                 ),
+
                 semantic_score=item.get(
                     "semantic_score",
                     0.0,
                 ),
+
                 lexical_score=item.get(
                     "lexical_score",
                     0.0,
                 ),
+
                 candidate_score=item.get(
                     "candidate_score",
                     0.0,
                 ),
+
                 relationship_score=item.get(
                     "relationship_score",
                     0.0,
                 ),
+
                 connectivity_score=item.get(
                     "connectivity_score",
                     0.0,
                 ),
+
                 constraint_penalty=item.get(
                     "constraint_penalty",
                     0.0,
                 ),
+
                 constraint_violations=item.get(
                     "constraint_violations",
                     [],
@@ -1477,31 +1390,15 @@ class BeamSearchPlanner:
             )
 
         # --------------------------------------------------------
-        # Copy ONLY direct relationships between selected
-        # executable operations.
+        # Copy only actual execution-order relationships between
+        # selected executable operations.
         #
-        # This is crucial.
+        # IMPORTANT:
         #
-        # Example:
+        # OPERATION_INCLUDES is deliberately NOT copied.
         #
-        #     Update Account
-        #          |
-        #          | OPERATION_REQUIRES
-        #          v
-        #        Account
-        #
-        # Account is NOT copied into the workflow graph.
-        #
-        # But:
-        #
-        #     Validate User
-        #          |
-        #          | OPERATION_PRECEDES
-        #          v
-        #     Create User
-        #
-        # is copied because both endpoints are executable
-        # operations.
+        # It remains available to beam search as structural
+        # compatibility information.
         # --------------------------------------------------------
 
         domain_graph = None
@@ -1543,8 +1440,11 @@ class BeamSearchPlanner:
                     )
                 )
 
-                # Only Operation -> Operation relationships can
-                # become workflow edges.
+                # ------------------------------------------------
+                # Only Operation -> Operation edges can ever become
+                # workflow edges.
+                # ------------------------------------------------
+
                 if not (
                     self._is_executable_node_type(
                         source_type
@@ -1561,15 +1461,16 @@ class BeamSearchPlanner:
                     "",
                 )
 
-                # Context and constraint relationships do not become
-                # workflow edges.
+                # ------------------------------------------------
+                # Only genuine ordering relationships become
+                # execution edges.
                 #
-                # RULE_CONSTRAINS is intentionally excluded here.
-                # It was already used during candidate validation.
-                if relation in (
-                    self.CONTEXT_RELATIONSHIPS
-                    | self.CONSTRAINT_RELATIONSHIPS
-                ):
+                # OPERATION_INCLUDES is intentionally excluded.
+                # Context relationships are excluded.
+                # Rule constraints are excluded.
+                # ------------------------------------------------
+
+                if relation not in self.ORDERING_RELATIONSHIPS:
                     continue
 
                 graph.add_edge(
@@ -1579,41 +1480,18 @@ class BeamSearchPlanner:
                 )
 
         # --------------------------------------------------------
-        # IMPORTANT:
+        # NO selection-order fallback.
         #
-        # There is deliberately NO:
+        # Never do:
         #
         #     selection[i] -> selection[i + 1]
         #
-        # fallback.
+        # because selection order represents semantic matching
+        # order, not execution order.
         #
-        # Beam selection order represents matching/processing order.
-        # It does NOT represent execution order.
-        #
-        # Therefore, if:
-        #
-        #     selection =
-        #         [
-        #             Create Account,
-        #             Validate User,
-        #             Create User
-        #         ]
-        #
-        # we must NOT infer:
-        #
-        #     Create Account -> Validate User
-        #
-        # just because Create Account happened to appear first.
-        #
-        # If the actual directed graph says:
-        #
-        #     Validate User -> Create User
-        #     Create User  -> Create Account
-        #
-        # those are the relationships that determine execution.
-        #
-        # A disconnected selected operation remains a node without
-        # an invented ordering edge.
+        # If there is no explicit ordering relationship between two
+        # selected operations, they remain unrelated in the
+        # execution graph.
         # --------------------------------------------------------
 
         return graph
