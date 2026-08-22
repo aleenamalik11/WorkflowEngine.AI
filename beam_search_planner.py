@@ -529,6 +529,11 @@ class BeamSearchPlanner:
                     )
 
             if not new_beams:
+                unsupported_steps.append({
+                    "step_index": step_index,
+                    "prompt_text": step.text,
+                    "reason": "All matching domain operations were already selected earlier in the plan.",
+                })
                 continue
 
             # ----------------------------------------------------
