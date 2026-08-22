@@ -96,7 +96,7 @@ def build_contextual_subgraph(
         direct_candidates = domain_client.candidate_nodes(
             text=step.text,
             embedding=step_embedding,
-            k=k,
+            k=max(k, 25),
         )
 
         step_candidates = []
@@ -781,38 +781,45 @@ def _best_candidate_for_text(
     candidate across semantic steps.
     """
 
-    normalized = _normalize(
-        text
-    )
+    normalized = _normalize(text)
+    matching_steps = []
 
-    best = None
-    best_score = -1.0
+    for index, step in enumerate(steps):
+        similarity = _lexical_similarity(normalized, step.text)
+        if _normalize(step.text) == normalized:
+            similarity = 1.0
+        if similarity > 0.0:
+            matching_steps.append((similarity, index))
 
-    for index, step in enumerate(
-        steps
-    ):
+    if not matching_steps:
+        return None
 
-        step_similarity = _lexical_similarity(
+    _, step_index = max(matching_steps)
+    candidates = candidate_map.get(step_index, [])
+    aligned_candidates = [
+        candidate
+        for candidate in candidates
+        if _lexical_similarity(
             normalized,
-            step.text,
-        )
+            candidate.get("name", ""),
+        ) > 0.0
+    ]
+    candidates = aligned_candidates
+    executable = [
+        candidate for candidate in candidates
+        if candidate.get("node_type") in {"Operation", "operation"}
+    ]
+    candidates = executable or candidates
 
-        for candidate in candidate_map.get(
-            index,
-            [],
-        ):
+    if not candidates:
+        return None
 
-            score = (
-                0.65 * candidate["score"]
-                + 0.35 * step_similarity
-            )
-
-            if score > best_score:
-
-                best_score = score
-                best = candidate[
-                    "node_id"
-                ]
-
-    return best
+    best = max(
+        candidates,
+        key=lambda candidate: (
+            candidate.get("source") == "direct",
+            float(candidate.get("score", 0.0)),
+        ),
+    )
+    return best.get("node_id")
 

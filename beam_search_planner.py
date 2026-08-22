@@ -18,7 +18,8 @@ Responsibilities:
     7. Preserve real directed domain relationships.
     8. Preserve PROMPT_DEPENDENCY relationships created upstream.
     9. Never interpret beam-selection order as execution order.
-    10. Expand only selected executable operations into the workflow graph.
+    10. Expand selected operations with connected executable domain
+        neighbors, marking those neighbors as inferred.
 
 Important architectural distinction:
 
@@ -90,6 +91,8 @@ import networkx as nx
 
 class BeamSearchPlanner:
 
+    _alignment_nlp = None
+
     # ============================================================
     # Relationship categories
     # ============================================================
@@ -98,25 +101,34 @@ class BeamSearchPlanner:
     #
     # IMPORTANT:
     #
-    # OPERATION_INCLUDES is intentionally NOT here.
-    #
-    # "includes" is a structural/domain relationship and does not
-    # necessarily mean that the source operation executes before
-    # the included operation.
+    # OPERATION_INCLUDES is intentionally not used to order two
+    # prompt-selected candidates. During expansion, however, it exposes
+    # inferred child operations whose domain edges are retained.
     ORDERING_RELATIONSHIPS = {
         "OPERATION_PRECEDES",
         "PROMPT_DEPENDENCY",
         "PROMPT_PRECEDES",
     }
 
-    # Relationships between executable operations that are useful
-    # for determining whether two operations belong to the same
-    # domain workflow, but which do NOT themselves establish
-    # execution order.
-    #
-    # OPERATION_INCLUDES belongs here.
+    # Relationships that identify executable neighbors during domain
+    # expansion. OPERATION_INCLUDES is the common parent-to-child
+    # workflow structure.
     STRUCTURAL_RELATIONSHIPS = {
         "OPERATION_INCLUDES",
+    }
+
+    # Domain relationships that may expose another executable operation
+    # required to carry out a selected operation.  These relationships are
+    # copied into the execution graph so GraphPlanner can order the inferred
+    # steps from the ontology.
+    INFERRED_OPERATION_RELATIONSHIPS = {
+        "OPERATION_INCLUDES",
+        "OPERATION_REQUIRES",
+        "OPERATION_PRECEDES",
+        "OPERATION_VALIDATES",
+        "OPERATION_PRODUCES",
+        "OPERATION_MODIFIES",
+        "OPERATION_ACCEPTS",
     }
 
     # Relationships that describe domain context.
@@ -199,6 +211,11 @@ class BeamSearchPlanner:
     # Explicit direct matches receive a small preference.
     EXPLICIT_DIRECT_BONUS = 0.15
 
+    # Prefer a direct operation whose name starts with the requested action.
+    # This prevents a related neighborhood operation from winning on a small
+    # embedding-score difference when the user explicitly names the action.
+    DIRECT_NAME_ALIGNMENT_BONUS = 0.12
+
     def __init__(
         self,
         beam_width=3,
@@ -254,6 +271,7 @@ class BeamSearchPlanner:
                 "constraint_violations": [],
             }
         ]
+        unsupported_steps = []
 
         # --------------------------------------------------------
         # Process semantic steps.
@@ -285,7 +303,23 @@ class BeamSearchPlanner:
                 )
             ]
 
+            aligned_candidates = [
+                candidate
+                for candidate in candidates
+                if self._name_aligns_with_prompt(
+                    candidate.get("name", ""),
+                    step.text,
+                )
+            ]
+
+            candidates = aligned_candidates
+
             if not candidates:
+                unsupported_steps.append({
+                    "step_index": step_index,
+                    "prompt_text": step.text,
+                    "reason": "No executable domain operation matches the requested action.",
+                })
                 # Do not invent a replacement operation.
                 continue
 
@@ -365,6 +399,18 @@ class BeamSearchPlanner:
                             self.EXPLICIT_DIRECT_BONUS
                         )
 
+                    name_alignment_bonus = 0.0
+                    if (
+                        candidate.get("source") == "direct"
+                        and self._name_aligns_with_prompt(
+                            candidate.get("name", ""),
+                            step.text,
+                        )
+                    ):
+                        name_alignment_bonus = (
+                            self.DIRECT_NAME_ALIGNMENT_BONUS
+                        )
+
                     # ------------------------------------------------
                     # Neighborhood inference penalty.
                     # ------------------------------------------------
@@ -399,6 +445,7 @@ class BeamSearchPlanner:
                         + relationship_score
                         + connectivity_score
                         + explicit_bonus
+                        + name_alignment_bonus
                         - inferred_penalty
                         - disconnected_penalty
                         - constraint_penalty
@@ -505,16 +552,54 @@ class BeamSearchPlanner:
             return {
                 "beam": [],
                 "selection": [],
+                "unsupported_steps": unsupported_steps,
             }
 
         return {
             "beam": beams,
             "selection": beams[0]["selection"],
+            "unsupported_steps": unsupported_steps,
         }
 
     # ============================================================
     # Candidate filtering
     # ============================================================
+
+    @classmethod
+    def _name_aligns_with_prompt(cls, name, prompt):
+        """Compare action lemmas using the NLP model, not a synonym table."""
+        nlp = cls._load_alignment_nlp()
+        if nlp is not None:
+            name_doc, prompt_doc = nlp.pipe([str(name), str(prompt)])
+            name_tokens = [
+                token.lemma_.lower()
+                for token in name_doc
+                if not token.is_punct
+            ]
+            prompt_actions = {
+                token.lemma_.lower()
+                for token in prompt_doc
+                if token.pos_ in {"VERB", "AUX"}
+            }
+            if name_tokens and prompt_actions:
+                return name_tokens[0] in prompt_actions
+
+        name_tokens = re.findall(r"[a-z0-9]+", str(name).lower())
+        return bool(
+            name_tokens
+            and name_tokens[0] in cls._tokenize(prompt)
+        )
+
+    @classmethod
+    def _load_alignment_nlp(cls):
+        if cls._alignment_nlp is not None:
+            return cls._alignment_nlp or None
+        try:
+            import spacy
+            cls._alignment_nlp = spacy.load("en_core_web_sm")
+        except (ImportError, OSError):
+            cls._alignment_nlp = False
+        return cls._alignment_nlp or None
 
     @classmethod
     def _is_executable_candidate(
@@ -1390,15 +1475,10 @@ class BeamSearchPlanner:
             )
 
         # --------------------------------------------------------
-        # Copy only actual execution-order relationships between
-        # selected executable operations.
-        #
-        # IMPORTANT:
-        #
-        # OPERATION_INCLUDES is deliberately NOT copied.
-        #
-        # It remains available to beam search as structural
-        # compatibility information.
+        # Expand the selected operations with executable neighbors from
+        # the domain graph.  Candidate matching answers which operation
+        # represents the prompt; the ontology answers which operations are
+        # needed to perform it.
         # --------------------------------------------------------
 
         domain_graph = None
@@ -1409,6 +1489,154 @@ class BeamSearchPlanner:
             )
 
         if domain_graph is not None:
+
+            prompt_selected_ids = list(selected_ids)
+            semantic_steps = (
+                candidate_plan.get("semantic_steps", [])
+                if candidate_plan
+                else []
+            )
+            user_prompt = " ".join(
+                step.text
+                for step in semantic_steps
+                if getattr(step, "text", "")
+            )
+
+            selected_prompt_text = {
+                node_id: graph.nodes[node_id].get(
+                    "prompt_text",
+                    "",
+                )
+                for node_id in selected_ids
+            }
+
+            inferred_ids = set()
+            expansion_queue = list(selected_ids)
+            expanded_ids = set()
+
+            while expansion_queue:
+                selected_id = expansion_queue.pop(0)
+                if selected_id in expanded_ids:
+                    continue
+                expanded_ids.add(selected_id)
+
+                adjacent_edges = domain_graph.out_edges(
+                    selected_id,
+                    data=True,
+                )
+
+                for source, target, data in adjacent_edges:
+                    relation = data.get("relation", "")
+                    if relation not in self.INFERRED_OPERATION_RELATIONSHIPS:
+                        continue
+
+                    neighbor_id = (
+                        target if source == selected_id else source
+                    )
+                    neighbor_data = domain_graph.nodes[neighbor_id]
+
+                    if not self._is_executable_node_type(
+                        neighbor_data.get("node_type")
+                    ):
+                        continue
+
+                    if neighbor_id in selected_ids:
+                        continue
+
+                    if neighbor_id in inferred_ids:
+                        continue
+
+                    inferred_ids.add(neighbor_id)
+                    expansion_queue.append(neighbor_id)
+                    inferred_data = dict(neighbor_data)
+                    inferred_data.update(
+                        {
+                            "prompt_text": selected_prompt_text.get(
+                                selected_id,
+                                "",
+                            ),
+                            "explicit": False,
+                            "inferred": True,
+                            "source": "domain_neighbor",
+                        }
+                    )
+                    graph.add_node(
+                        neighbor_id,
+                        **inferred_data,
+                    )
+
+            # Complete only directed domain paths between prompt-selected
+            # operations. Incoming edges are used here only as part of a
+            # candidate path, never as generic parent expansion.
+            for source_id, target_id in zip(
+                prompt_selected_ids,
+                prompt_selected_ids[1:],
+            ):
+                prompt = user_prompt or " ".join(
+                    [
+                        selected_prompt_text.get(source_id, source_id),
+                        selected_prompt_text.get(target_id, target_id),
+                    ]
+                )
+                path = self._most_contextual_path(
+                    domain_graph,
+                    source_id,
+                    target_id,
+                    prompt,
+                )
+                if path is None:
+                    continue
+
+                if len(path) <= 2:
+                    continue
+
+                path_edges = list(zip(path, path[1:]))
+                if any(
+                    domain_graph.edges[edge].get("relation")
+                    not in self.INFERRED_OPERATION_RELATIONSHIPS
+                    for edge in path_edges
+                ):
+                    continue
+
+                for node_id in path[1:-1]:
+                    node_data = domain_graph.nodes[node_id]
+                    if not self._is_executable_node_type(
+                        node_data.get("node_type")
+                    ):
+                        continue
+                    if node_id in selected_ids:
+                        continue
+
+                    inferred_ids.add(node_id)
+                    inferred_data = dict(node_data)
+                    inferred_data.update(
+                        {
+                            "prompt_text": " -> ".join(
+                                [
+                                    selected_prompt_text.get(
+                                        source_id,
+                                        source_id,
+                                    ),
+                                    selected_prompt_text.get(
+                                        target_id,
+                                        target_id,
+                                    ),
+                                ]
+                            ),
+                            "explicit": False,
+                            "inferred": True,
+                            "source": "domain_path",
+                        }
+                    )
+                    graph.add_node(
+                        node_id,
+                        **inferred_data,
+                    )
+
+            selected_ids.extend(
+                node_id for node_id in inferred_ids
+                if node_id not in selected_ids
+            )
 
             for (
                 source,
@@ -1461,16 +1689,7 @@ class BeamSearchPlanner:
                     "",
                 )
 
-                # ------------------------------------------------
-                # Only genuine ordering relationships become
-                # execution edges.
-                #
-                # OPERATION_INCLUDES is intentionally excluded.
-                # Context relationships are excluded.
-                # Rule constraints are excluded.
-                # ------------------------------------------------
-
-                if relation not in self.ORDERING_RELATIONSHIPS:
+                if relation not in self.INFERRED_OPERATION_RELATIONSHIPS:
                     continue
 
                 graph.add_edge(
@@ -1495,6 +1714,94 @@ class BeamSearchPlanner:
         # --------------------------------------------------------
 
         return graph
+
+    @classmethod
+    def _most_contextual_path(
+        cls,
+        graph,
+        source,
+        target,
+        prompt,
+        max_path_length=4,
+    ):
+        """Choose the domain path whose nodes best match the prompt."""
+
+        try:
+            paths = nx.all_simple_paths(
+                graph,
+                source=source,
+                target=target,
+                cutoff=max_path_length,
+            )
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+        best_path = None
+        best_score = float("-inf")
+
+        for path in paths:
+            if not cls._is_contextual_operation_path(graph, path):
+                continue
+
+            score = cls._contextual_path_score(
+                graph,
+                path,
+                prompt,
+            )
+
+            if score > best_score:
+                best_score = score
+                best_path = path
+
+        return best_path
+
+    @classmethod
+    def _is_contextual_operation_path(cls, graph, path):
+        for node_id in path:
+            if not cls._is_executable_node_type(
+                graph.nodes[node_id].get("node_type")
+            ):
+                return False
+
+        for source, target in zip(path, path[1:]):
+            if graph.edges[source, target].get(
+                "relation"
+            ) not in cls.INFERRED_OPERATION_RELATIONSHIPS:
+                return False
+
+        return True
+
+    @classmethod
+    def _contextual_path_score(cls, graph, path, prompt):
+        prompt_tokens = cls._tokenize(prompt)
+        score = 0.0
+
+        for node_id in path[1:-1]:
+            node_data = graph.nodes[node_id]
+            node_tokens = cls._tokenize(
+                cls._node_text(node_data)
+            )
+
+            lexical_score = (
+                len(prompt_tokens & node_tokens)
+                / len(prompt_tokens | node_tokens)
+                if prompt_tokens and node_tokens
+                else 0.0
+            )
+
+            score += (
+                0.70 * lexical_score
+                + 0.30 * float(
+                    node_data.get("semantic_score", 0.0)
+                )
+            )
+
+        for source, target in zip(path, path[1:]):
+            score += cls._edge_compatibility_score(
+                graph.edges[source, target]
+            )
+
+        return score
 
     # ============================================================
     # Helpers

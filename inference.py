@@ -123,15 +123,28 @@ def main():
         "Qwen/Qwen2.5-7B-Instruct",
     )
 
-    print(
-        "Initializing LLM service..."
-    )
+    hybrid_mode = os.getenv(
+        "HYBRID_MODE",
+        "0",
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
-    llm_service = (
-        LLMService(
-            model=llm_model
+    llm_service = None
+
+    if hybrid_mode:
+        print(
+            "Initializing LLM service..."
         )
-    )
+
+        llm_service = (
+            LLMService(
+                model=llm_model
+            )
+        )
 
     # ---------------------------------------------------------
     # Neo4j
@@ -216,6 +229,8 @@ def main():
                 llm_service=(
                     llm_service
                 ),
+
+                hybrid_mode=hybrid_mode,
 
                 beam_width=3,
 

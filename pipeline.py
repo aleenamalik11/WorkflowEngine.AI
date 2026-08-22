@@ -6,9 +6,10 @@ Architecture:
     user prompt
         |
         v
-    HybridSemanticParser
+    Semantic Parser
         |
-        | Stage 1/2/11
+        | deterministic explicit concepts
+        | optional LLM enrichment
         v
     Contextual Subgraph Builder
         |
@@ -28,15 +29,28 @@ Architecture:
         v
     Workflow JSON
 
+
 The domain graph is the semantic source of truth.
+
+The LLM, when enabled, is ONLY a semantic enrichment component.
+
+The LLM does NOT:
+
+    - choose implementation functions
+    - create workflow nodes
+    - create domain graph nodes
+    - determine executable operations
+    - directly generate workflow JSON
 
 No Dijkstra.
 No shortest-path routing.
 """
 
+
 import json
 
 from semantic_parser import (
+    SimpleSemanticParser,
     HybridSemanticParser,
 )
 
@@ -57,6 +71,10 @@ from workflow_generator import (
     WorkflowGenerator,
 )
 
+from workflow_input_resolver import (
+    WorkflowInputResolver,
+)
+
 
 class WorkflowPipeline:
 
@@ -67,15 +85,14 @@ class WorkflowPipeline:
         function_matcher,
         parser=None,
         llm_service=None,
+        hybrid_mode=False,
         beam_width=3,
         top_k=5,
         neighborhood_depth=1,
         verbose=True,
     ):
 
-        self.domain_client = (
-            domain_client
-        )
+        self.domain_client = domain_client
 
         self.embedding_service = (
             embedding_service
@@ -89,16 +106,70 @@ class WorkflowPipeline:
             llm_service
         )
 
-        self.parser = (
-            parser
-            or HybridSemanticParser(
-                llm_service=llm_service,
-                enable_llm=(
-                    llm_service
-                    is not None
-                ),
-            )
+        self.hybrid_mode = bool(
+            hybrid_mode
         )
+
+        # -----------------------------------------------------
+        # Parser selection
+        # -----------------------------------------------------
+        #
+        # Three supported cases:
+        #
+        # 1. Custom parser supplied:
+        #
+        #       parser=my_parser
+        #
+        #    Use it exactly as supplied.
+        #
+        # 2. No parser + hybrid_mode=False:
+        #
+        #       deterministic parser
+        #
+        # 3. No parser + hybrid_mode=True:
+        #
+        #       HybridSemanticParser + LLM
+        #
+        # -----------------------------------------------------
+
+        if parser is not None:
+
+            self.parser = parser
+
+        else:
+
+            self.parser = (
+                HybridSemanticParser(
+                    llm_service=(
+                        llm_service
+                        if self.hybrid_mode
+                        else None
+                    ),
+                    enable_llm=(
+                        self.hybrid_mode
+                    ),
+                )
+                if self.hybrid_mode
+                else SimpleSemanticParser()
+            )
+
+        # -----------------------------------------------------
+        # Validate hybrid configuration.
+        # -----------------------------------------------------
+
+        if (
+            self.hybrid_mode
+            and self.llm_service is None
+            and isinstance(
+                self.parser,
+                HybridSemanticParser,
+            )
+        ):
+
+            raise ValueError(
+                "hybrid_mode=True requires an "
+                "llm_service when using HybridSemanticParser."
+            )
 
         self.beam_planner = (
             BeamSearchPlanner(
@@ -114,6 +185,10 @@ class WorkflowPipeline:
             WorkflowGenerator(
                 function_matcher
             )
+        )
+
+        self.input_resolver = (
+            WorkflowInputResolver()
         )
 
         self.top_k = top_k
@@ -139,14 +214,10 @@ class WorkflowPipeline:
         # -----------------------------------------------------
         # STAGE 0
         #
-        # Load domain context for the LLM.
+        # Build ontology context.
         #
-        # IMPORTANT:
-        #
-        # The LLM can infer semantic concepts, but it should
-        # not hallucinate arbitrary domain concepts.
-        #
-        # The ontology gives it the vocabulary of the domain.
+        # This is only passed to parsers that support semantic
+        # domain context.
         # -----------------------------------------------------
 
         domain_context = (
@@ -155,23 +226,21 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGE 1 / 2 / 11
-        # Semantic interpretation
+        #
+        # Semantic interpretation.
         # -----------------------------------------------------
 
         interpretation = (
-            self.parser.parse(
+            self._parse_prompt(
                 prompt,
-                domain_context=(
-                    domain_context
-                ),
+                domain_context,
             )
         )
 
         debug[
             "semantic_interpretation"
         ] = (
-            interpretation
-            .as_debug_dict()
+            interpretation.as_debug_dict()
         )
 
         self._log(
@@ -183,8 +252,9 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGES 3-7
+        #
         # Semantic + lexical matching
-        # + neighborhood expansion
+        # + neighborhood expansion.
         # -----------------------------------------------------
 
         (
@@ -235,7 +305,11 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGE 7
-        # Relationship semantics
+        #
+        # Relationship semantics have already been applied
+        # by contextual_subgraph_builder.
+        #
+        # We only collect them for debugging.
         # -----------------------------------------------------
 
         weighted_edges = []
@@ -244,12 +318,10 @@ class WorkflowPipeline:
             source,
             target,
             data,
-        ) in (
-            candidate_plan[
-                "domain_graph"
-            ].edges(
-                data=True
-            )
+        ) in candidate_plan[
+            "domain_graph"
+        ].edges(
+            data=True
         ):
 
             weighted_edges.append(
@@ -260,14 +332,14 @@ class WorkflowPipeline:
                 }
             )
 
-        # self._log(
-        #     "STAGE 7 - Weighted domain graph",
-        #     weighted_edges,
-        # )
+        debug[
+            "domain_graph_edges"
+        ] = weighted_edges
 
         # -----------------------------------------------------
         # STAGE 8
-        # Beam Search
+        #
+        # Beam search.
         # -----------------------------------------------------
 
         search_result = (
@@ -317,9 +389,23 @@ class WorkflowPipeline:
             ],
         )
 
+        unsupported_steps = search_result.get(
+            "unsupported_steps",
+            [],
+        )
+
+        if unsupported_steps:
+            details = "; ".join(
+                item["prompt_text"]
+                for item in unsupported_steps
+            )
+            self._log(
+                "STAGE 8 - Skipped unsupported actions",
+                details,
+            )
+
         # -----------------------------------------------------
-        # Fail explicitly rather than generating an empty
-        # workflow.
+        # Fail explicitly.
         # -----------------------------------------------------
 
         if not search_result.get(
@@ -327,8 +413,10 @@ class WorkflowPipeline:
         ):
 
             raise RuntimeError(
-                "Beam search produced no selected workflow nodes. "
-                "Stage 3 returned no usable domain candidates."
+                "Beam search produced no selected "
+                "workflow nodes. "
+                "Stage 3 returned no usable "
+                "executable domain candidates."
             )
 
         # -----------------------------------------------------
@@ -346,7 +434,8 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGE 9
-        # Graph planning
+        #
+        # Actual execution ordering.
         # -----------------------------------------------------
 
         try:
@@ -391,7 +480,8 @@ class WorkflowPipeline:
 
         # -----------------------------------------------------
         # STAGE 10 / 11
-        # Function matching + generation
+        #
+        # Function matching + workflow generation.
         # -----------------------------------------------------
 
         workflow = (
@@ -402,6 +492,19 @@ class WorkflowPipeline:
                 ),
             )
         )
+
+        workflow_inputs = (
+            self.input_resolver.resolve(
+                candidate_plan["domain_graph"],
+                execution_order=plan[
+                    "execution_order"
+                ],
+            )
+        )
+
+        workflow[
+            "Inputs"
+        ] = workflow_inputs
 
         self._log(
             "STAGE 10/11 - Workflow JSON",
@@ -414,7 +517,65 @@ class WorkflowPipeline:
         )
 
     # =========================================================
-    # Domain context for LLM
+    # Parser invocation
+    # =========================================================
+
+    def _parse_prompt(
+        self,
+        prompt,
+        domain_context,
+    ):
+        """
+        Invoke the configured parser.
+
+        Custom parsers that only accept:
+
+            parse(prompt)
+
+        are supported.
+
+        HybridSemanticParser receives:
+
+            parse(
+                prompt,
+                domain_context=...
+            )
+
+        This keeps the pipeline decoupled from a specific parser
+        implementation.
+        """
+
+        if isinstance(
+            self.parser,
+            HybridSemanticParser,
+        ):
+
+            return self.parser.parse(
+                prompt,
+                domain_context=domain_context,
+            )
+
+        # -----------------------------------------------------
+        # Custom parser.
+        #
+        # Prefer passing domain context if supported.
+        # -----------------------------------------------------
+
+        try:
+
+            return self.parser.parse(
+                prompt,
+                domain_context=domain_context,
+            )
+
+        except TypeError:
+
+            return self.parser.parse(
+                prompt
+            )
+
+    # =========================================================
+    # Domain context for semantic parser / LLM
     # =========================================================
 
     def _build_domain_context(
@@ -438,15 +599,20 @@ class WorkflowPipeline:
             context.append(
                 {
                     "id": node.id,
+
                     "name": node.name,
+
                     "type": node.node_type,
+
                     "types": list(
                         node.types or []
                     ),
+
                     "description": (
                         node.description
                         or ""
                     ),
+
                     "aliases": list(
                         node.aliases
                         or []
