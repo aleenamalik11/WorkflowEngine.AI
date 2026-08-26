@@ -296,3 +296,22 @@ def function_details_from_match(
         match=match,
         semantic_text=semantic_text,
     )
+
+@dataclass
+class SemanticStep:
+    text: str
+    explicit: bool = True
+    reason: str = ""
+    condition: str = ""
+    domain_candidates: List[Any] = field(default_factory=list)
+
+
+@dataclass
+class SemanticInterpretation:
+    intent: str
+    steps: List[SemanticStep]
+    dependencies: List[Dict[str, str]] = field(default_factory=list)
+    explicit_steps: List[SemanticStep] = field(default_factory=list)
+    inferred_steps: List[SemanticStep] = field(default_factory=list)
+    mentioned_entities: List[Any] = field(default_factory=list)
+    constraints: List[Any] = field(default_factory=list)

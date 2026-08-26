@@ -222,3 +222,80 @@ def _has_embedding(
             ValueError,
     ):
         return False
+
+def _add_domain_node(graph, node, source=None, score=None):
+    """
+    Add a domain node to the contextual graph.
+
+    The node keeps its ontology identity and embedding so that later
+    semantic matching can operate on the actual domain representation.
+    """
+
+    if node is None:
+        return
+
+    node_id = node.id
+
+    data = {
+        "name": node.name,
+        "node_type": node.node_type,
+        "description": node.description,
+        "aliases": list(node.aliases or []),
+        "embedding": node.embedding,
+    }
+
+    if score is not None:
+        data["semantic_score"] = score
+
+    if source is not None:
+        data["source"] = source
+
+    embedding = data.get("embedding")
+
+    # IMPORTANT:
+    # Do not use:
+    #
+    #     if not embedding:
+    #
+    # because embeddings may be numpy arrays.
+    #
+    # A numpy array with multiple values cannot be evaluated
+    # directly as a boolean.
+    if not _has_embedding(embedding):
+        data["embedding"] = None
+
+    if graph.has_node(node_id):
+        existing = graph.nodes[node_id]
+
+        # Preserve the strongest semantic score.
+        if score is not None:
+            existing_score = existing.get("semantic_score")
+
+            if (
+                existing_score is None
+                or score > existing_score
+            ):
+                existing["semantic_score"] = score
+
+        # Preserve embedding if the existing node does not have one.
+        if (
+            not _has_embedding(existing.get("embedding"))
+            and _has_embedding(data.get("embedding"))
+        ):
+            existing["embedding"] = data["embedding"]
+
+        # Preserve source information.
+        if source is not None:
+            sources = existing.setdefault("sources", [])
+
+            if source not in sources:
+                sources.append(source)
+
+        return
+
+    data["sources"] = []
+
+    if source is not None:
+        data["sources"].append(source)
+
+    graph.add_node(node_id, **data)

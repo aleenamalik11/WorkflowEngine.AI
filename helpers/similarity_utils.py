@@ -3,6 +3,7 @@ import re
 import np
 import numpy as np
 
+from helpers.ontology_semantics import semantics_for
 from models import DomainNode
 
 
@@ -108,3 +109,59 @@ def _normalize_text(
     return " ".join(
         text.split()
     )
+
+def _combined_score(
+    lexical_score,
+    semantic_score,
+    candidate_score,
+):
+    """
+    Candidate score from DomainGraphClient is already a
+    lexical/embedding blend.
+
+    We still recompute semantic and lexical similarity here
+    so the planner has transparent scores.
+
+    The explicit semantic/lexical values dominate.
+    """
+
+    return (
+        0.45 * semantic_score
+        + 0.35 * lexical_score
+        + 0.20 * max(
+            0.0,
+            min(
+                1.0,
+                candidate_score,
+            ),
+        )
+    )
+
+
+def _relationship_relevance(
+    relation,
+):
+    """
+    Convert ontology relationship semantics into a relevance
+    score.
+
+    IMPORTANT:
+    This is NOT a path cost.
+
+    Lower relationship weights mean stronger semantic relevance.
+    """
+
+    semantics = semantics_for(
+        relation
+    )
+
+    if semantics.classification == "REQUIRED":
+        return 1.0
+
+    if semantics.classification == "POSSIBLE":
+        return 0.75
+
+    if semantics.classification == "CONTEXT":
+        return 0.40
+
+    return 0.20
