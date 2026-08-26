@@ -1,0 +1,22 @@
+{
+  "summary": {
+    "raw_node_count": 74,
+    "mapped_node_count": 73,
+    "raw_relationship_count": 67,
+    "mapped_relationship_count": 67
+  },
+  "duplicate_raw_ids": [
+    {
+      "id": "customer",
+      "types": [
+        "Actor",
+        "DomainEntity"
+      ],
+      "raw_record_count": 2,
+      "action": "retained as a multi-label node; review during normalization"
+    }
+  ],
+  "unresolved_references": [],
+  "unmapped_relationships": [],
+  "invalid_relationships": []
+}
