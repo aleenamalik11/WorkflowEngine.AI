@@ -1,6 +1,8 @@
 import math
 import networkx as nx
 
+from helpers.similarity_utils import _cosine_similarity, _lexical_similarity, _combined_score, _relationship_relevance
+from helpers.utils import _add_domain_node
 from models import SemanticInterpretation
 
 class PromptSubGraphBuilder:
@@ -22,7 +24,7 @@ class PromptSubGraphBuilder:
         constraint_edges = []
         conditional_dependencies = []
 
-        for step_index, step in interpretation.steps:
+        for step in interpretation.steps:
             step_embedding = self._embedding_service.get_embedding(step.text)
 
             candidates = self._domain_graph_service.candidate_nodes(step.text, step_embedding, k=max(k, 25))
@@ -58,7 +60,7 @@ class PromptSubGraphBuilder:
                 elif item["score"] > existing_candidate["score"]:
                     item["explicit"] = (
                             item["explicit"]
-                            or existing["explicit"]
+                            or existing_candidate["explicit"]
                     )
 
                     item["inferred"] = (
@@ -93,7 +95,7 @@ class PromptSubGraphBuilder:
                 : max(k * 2, 10)
             ]
 
-            candidate_map[step_index] = (
+            candidate_map[step.text] = (
                 step_candidates
             )
 
