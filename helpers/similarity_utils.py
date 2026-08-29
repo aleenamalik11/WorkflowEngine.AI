@@ -110,6 +110,21 @@ def _normalize_text(
         text.split()
     )
 
+
+def _node_text(node):
+    parts = [
+        node.name or "",
+        node.description or "",
+    ]
+
+    parts.extend(
+        node.aliases or []
+    )
+
+    return " ".join(
+        p for p in parts if p
+    )
+
 def _combined_score(
     lexical_score,
     semantic_score,

@@ -1,7 +1,8 @@
 import math
 import networkx as nx
 
-from helpers.similarity_utils import _cosine_similarity, _lexical_similarity, _combined_score, _relationship_relevance
+from helpers.similarity_utils import _cosine_similarity, _lexical_similarity, _combined_score, _relationship_relevance, \
+    _node_text
 from helpers.utils import _add_domain_node
 from models import SemanticInterpretation
 
@@ -24,7 +25,7 @@ class PromptSubGraphBuilder:
         constraint_edges = []
         conditional_dependencies = []
 
-        for step in interpretation.steps:
+        for step_index, step in interpretation.steps:
             step_embedding = self._embedding_service.get_embedding(step.text)
 
             candidates = self._domain_graph_service.candidate_nodes(step.text, step_embedding, k=max(k, 25))
@@ -33,7 +34,7 @@ class PromptSubGraphBuilder:
 
             for candidate in candidates:
                 node = candidate.node
-                candidate_embedding = get_or_create_embedding(candidate)
+                candidate_embedding = self._domain_graph_service.get_or_create_embedding(candidate)
 
                 semantic_similarity = _cosine_similarity(candidate_embedding, step_embedding)
                 lexical_similarity = _lexical_similarity(candidate.text, step.text)
@@ -53,7 +54,14 @@ class PromptSubGraphBuilder:
                     "prompt_text": step.text,
                 }
 
-                existing_candidate = step_candidates.get(item["node_id"])
+                existing_candidate = next(
+                    (
+                        candidate
+                        for candidate in step_candidates
+                        if candidate["node_id"] == item["node_id"]
+                    ),
+                    None,
+                )
 
                 if existing_candidate is None:
                     step_candidates.append(item)
@@ -62,10 +70,10 @@ class PromptSubGraphBuilder:
                             item["explicit"]
                             or existing_candidate["explicit"]
                     )
+                    item["inferred"] = not item["explicit"]
 
-                    item["inferred"] = (
-                        not item["explicit"]
-                    )
+                    index = step_candidates.index(existing_candidate)
+                    step_candidates[index] = item
 
 
                 _add_domain_node(
@@ -95,9 +103,24 @@ class PromptSubGraphBuilder:
                 : max(k * 2, 10)
             ]
 
-            candidate_map[step.text] = (
-                step_candidates
-            )
+            candidate_map[step_index] = {
+                "step_embedding": step_embedding,
+                "candidates": step_candidates,
+            }
+
+        prompt_domain_subgraph = self.set_execution_order(
+            interpretation,
+            prompt_domain_subgraph,
+            candidate_map)
+
+        candidate_plan = {
+            "prompt_domain_subgraph": prompt_domain_subgraph,
+            "candidate_map": candidate_map,
+            "semantic_steps": interpretation.steps,
+            "intent": interpretation.intent,
+        }
+
+        return candidate_plan
 
     def expand_neighborhood(
             self,
@@ -242,3 +265,100 @@ class PromptSubGraphBuilder:
             inferred_candidates.append(inferred_item)
 
         return inferred_candidates
+
+    def set_execution_order(
+            self,
+            interpretation: SemanticInterpretation,
+            prompt_subgraph,
+            candidate_map):
+
+        for dependency in interpretation.dependencies:
+
+            before = dependency.get("before")
+            after = dependency.get("after")
+
+            relation = dependency.get(
+                "relation",
+                "PROMPT_DEPENDENCY"
+            )
+
+            if not before or not after:
+                continue
+
+            before_candidate_embedding = self._embedding_service.get_embedding(before)
+            after_candidate_embedding = self._embedding_service.get_embedding(after)
+
+            before_node = self.best_candidate_for_embedding(
+                candidate_map,
+                before_candidate_embedding,
+            )
+
+            after_node = self.best_candidate_for_embedding(
+                candidate_map,
+                after_candidate_embedding,
+            )
+
+            if before_node is None or after_node is None:
+                continue
+
+            if before_node == after_node:
+                continue
+
+            # For PROMPT_CONDITION, we store the condition as metadata instead of creating an edge
+            if relation == "PROMPT_CONDITION":
+                condition = dependency.get("condition", "")
+                # Store condition on the target node for downstream processing
+                if prompt_subgraph.has_node(after_node):
+                    prompt_subgraph.nodes[after_node]["condition"] = condition
+                    prompt_subgraph.nodes[after_node]["is_conditional"] = True
+                    # Also mark the source node as the condition check
+                    if prompt_subgraph.has_node(before_node):
+                        prompt_subgraph.nodes[before_node]["is_condition_check"] = True
+                        prompt_subgraph.nodes[before_node]["condition_for"] = after_node
+                continue
+
+            prompt_subgraph.add_edge(
+                before_node,
+                after_node,
+                relation="PROMPT_DEPENDENCY",
+                inferred_context=True,
+                origin="prompt",
+            )
+
+        return prompt_subgraph
+
+    def best_candidate_for_embedding(
+            self,
+            candidate_map,
+            dependency_embedding,
+    ):
+        best_entry = None
+        best_similarity = float("-inf")
+
+        for entry in candidate_map.values():
+            similarity = _cosine_similarity(
+                dependency_embedding,
+                entry["step_embedding"],
+            )
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_entry = entry
+
+        if best_entry is None:
+            return None
+
+        candidates = best_entry["candidates"]
+
+        if not candidates:
+            return None
+
+        best_candidate = max(
+            candidates,
+            key=lambda candidate: candidate.get("score", 0.0),
+        )
+
+        if best_similarity < 0.5:  # tune experimentally
+            return None
+
+        return best_candidate.get("node_id")
