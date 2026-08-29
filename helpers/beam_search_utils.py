@@ -116,3 +116,40 @@ EXPLICIT_DIRECT_BONUS = 0.15
 # This prevents a related neighborhood operation from winning on a small
 # embedding-score difference when the user explicitly names the action.
 DIRECT_NAME_ALIGNMENT_BONUS = 0.12
+
+
+def _is_executable_selection_item(
+        cls,
+        item,
+):
+    node_type = item.get(
+        "domain_node_type"
+    )
+
+    return cls._is_executable_node_type(
+        node_type
+    )
+
+
+def _is_executable_node_type(
+        cls,
+        node_type,
+):
+    return node_type in (
+        cls.EXECUTABLE_NODE_TYPES
+    )
+
+def _is_contextual_operation_path(cls, graph, path):
+    for node_id in path:
+        if not cls._is_executable_node_type(
+                graph.nodes[node_id].get("node_type")
+        ):
+            return False
+
+    for source, target in zip(path, path[1:]):
+        if graph.edges[source, target].get(
+                "relation"
+        ) not in cls.INFERRED_OPERATION_RELATIONSHIPS:
+            return False
+
+    return True

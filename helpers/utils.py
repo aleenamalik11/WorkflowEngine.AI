@@ -299,3 +299,28 @@ def _add_domain_node(graph, node, source=None, score=None):
         data["sources"].append(source)
 
     graph.add_node(node_id, **data)
+
+    def _build_inferred_selection_item(
+            cls,
+            operation_id,
+            node_data,
+            prompt_text,
+            source,
+    ):
+        return {
+            "prompt_text": prompt_text,
+            "domain_node_id": operation_id,
+            "domain_node_name": node_data.get("name", operation_id),
+            "domain_node_type": node_data.get("node_type", "Operation"),
+            "explicit": False,
+            "inferred": True,
+            "source": source,
+            "semantic_score": 0.0,
+            "lexical_score": 0.0,
+            "candidate_score": 0.0,
+            "relationship_score": 0.0,
+            "connectivity_score": 0.0,
+            "constraint_penalty": 0.0,
+            "constraint_violations": [],
+            "condition": "",
+        }
