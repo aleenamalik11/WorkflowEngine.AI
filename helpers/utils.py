@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -324,3 +326,16 @@ def _add_domain_node(graph, node, source=None, score=None):
             "constraint_violations": [],
             "condition": "",
         }
+
+def _tokenize(
+    text,
+):
+    if not text:
+        return set()
+
+    return set(
+        re.findall(
+            r"[a-z0-9]+",
+            str(text).lower(),
+        )
+    )
