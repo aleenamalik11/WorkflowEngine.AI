@@ -25,8 +25,8 @@ class PromptSubGraphBuilder:
         constraint_edges = []
         conditional_dependencies = []
 
-        for step_index, step in interpretation.steps:
-            step_embedding = self._embedding_service.get_embedding(step.text)
+        for step_index, step in enumerate(interpretation.steps):
+            step_embedding = self._embedding_service.encode(step.text)
 
             candidates = self._domain_graph_service.candidate_nodes(step.text, step_embedding, k=max(k, 25))
 
@@ -34,7 +34,7 @@ class PromptSubGraphBuilder:
 
             for candidate in candidates:
                 node = candidate.node
-                candidate_embedding = self._domain_graph_service.get_or_create_embedding(candidate)
+                candidate_embedding = self._domain_graph_service._get_or_create_embedding(candidate)
 
                 semantic_similarity = _cosine_similarity(candidate_embedding, step_embedding)
                 lexical_similarity = _lexical_similarity(candidate.text, step.text)
@@ -285,8 +285,8 @@ class PromptSubGraphBuilder:
             if not before or not after:
                 continue
 
-            before_candidate_embedding = self._embedding_service.get_embedding(before)
-            after_candidate_embedding = self._embedding_service.get_embedding(after)
+            before_candidate_embedding = self._embedding_service.encode(before)
+            after_candidate_embedding = self._embedding_service.encode(after)
 
             before_node = self.best_candidate_for_embedding(
                 candidate_map,

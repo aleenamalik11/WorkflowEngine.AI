@@ -47,6 +47,8 @@ class ScoredNode:
 
     semantic_score: float = 0.0
 
+    embedding: bytearray | None = None
+
 @dataclass
 class RegisteredFunction:
     """

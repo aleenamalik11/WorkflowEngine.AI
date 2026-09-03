@@ -473,9 +473,13 @@ def main():
 
         function_matcher = FunctionMatcher(embedding_model)
 
+        from pathlib import Path
+
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
         functions_file = os.getenv(
             "FUNCTIONS_FILE",
-            "functions.json",
+            str(PROJECT_ROOT / "functions.json"),
         )
 
         function_matcher.load(functions_file)
