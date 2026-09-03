@@ -1,29 +1,35 @@
-import networkx as nx
-
-from helpers.beam_search_utils import _is_executable_candidate, EXPLICIT_DIRECT_BONUS, INFERRED_PENALTY, \
-    DISCONNECTED_PENALTY, _relationship_compatibility, _connectivity_score, _rule_constraint_penalty, \
-    _is_executable_node_type, _infer_operations_from_rules, _is_executable_selection_item
+from helpers.beam_search_utils import (
+    _is_executable_candidate,
+    EXPLICIT_DIRECT_BONUS,
+    INFERRED_PENALTY,
+    DISCONNECTED_PENALTY,
+    _relationship_compatibility,
+    _connectivity_score,
+    _rule_constraint_penalty,
+    _is_executable_node_type,
+    _infer_operations_from_rules,
+    _is_executable_selection_item,
+)
 
 
 class BeamSearchWorkflowSelector:
     def __init__(
-            self,
-            beam_width=3,
-            max_candidates_per_step=10,
+        self,
+        beam_width=3,
+        max_candidates_per_step=10,
     ):
         self.beam_width = beam_width
         self.max_candidates_per_step = max_candidates_per_step
 
     def search(
-            self,
-            candidate_plan,
+        self,
+        candidate_plan,
     ):
-
         semantic_steps = candidate_plan["semantic_steps"]
-
         candidate_map = candidate_plan["candidate_map"]
-
-        prompt_domain_subgraph = candidate_plan["prompt_domain_subgraph"]
+        prompt_domain_subgraph = candidate_plan[
+            "prompt_domain_subgraph"
+        ]
 
         beams = [
             {
@@ -33,11 +39,14 @@ class BeamSearchWorkflowSelector:
                 "constraint_violations": [],
             }
         ]
+
         unsupported_steps = []
 
         for step_index, step in enumerate(semantic_steps):
-
-            candidates = candidate_map.get(step_index,[],)
+            candidates = candidate_map.get(
+                step_index,
+                [],
+            )
 
             candidates = [
                 candidate
@@ -49,13 +58,28 @@ class BeamSearchWorkflowSelector:
             ]
 
             if not candidates:
-                unsupported_steps.append({
-                    "step_index": step_index,
-                    "prompt_text": step.text,
-                    "reason": "No executable domain operation matches the requested action.",
-                })
-                # Do not invent a replacement operation.
+                unsupported_steps.append(
+                    {
+                        "step_index": step_index,
+                        "prompt_text": step.text,
+                        "reason": (
+                            "No executable domain operation "
+                            "matches the requested action."
+                        ),
+                    }
+                )
                 continue
+
+            # Candidate scores have already been resolved by
+            # PromptSubGraphBuilder. Do not let an arbitrary
+            # neighborhood operation replace a semantic root.
+            candidates.sort(
+                key=lambda candidate: candidate.get(
+                    "score",
+                    0.0,
+                ),
+                reverse=True,
+            )
 
             candidates = candidates[
                 : self.max_candidates_per_step
@@ -64,9 +88,7 @@ class BeamSearchWorkflowSelector:
             new_beams = []
 
             for beam in beams:
-
                 for candidate in candidates:
-
                     node_id = candidate["node_id"]
 
                     if node_id in beam["selected_ids"]:
@@ -106,38 +128,36 @@ class BeamSearchWorkflowSelector:
                     explicit_bonus = 0.0
 
                     if (
-                            bool(step.explicit)
-                            and candidate.get("source") == "direct"
+                        bool(step.explicit)
+                        and candidate.get("source") == "direct"
                     ):
-                        explicit_bonus = (
-                            EXPLICIT_DIRECT_BONUS
-                        )
+                        explicit_bonus = EXPLICIT_DIRECT_BONUS
 
                     inferred_penalty = 0.0
 
                     if candidate.get("source") == "neighborhood":
-                        inferred_penalty = (
-                            INFERRED_PENALTY
-                        )
+                        inferred_penalty = INFERRED_PENALTY
 
                     disconnected_penalty = 0.0
 
                     if (
-                            beam["selected_ids"]
-                            and connectivity_score <= 0.0
+                        beam["selected_ids"]
+                        and connectivity_score <= 0.0
                     ):
                         disconnected_penalty = (
                             DISCONNECTED_PENALTY
                         )
 
+                    # Composite roots have already received their
+                    # semantic-root bonus in PromptSubGraphBuilder.
                     total_increment = (
-                            candidate_score
-                            + relationship_score
-                            + connectivity_score
-                            + explicit_bonus
-                            - inferred_penalty
-                            - disconnected_penalty
-                            - constraint_penalty
+                        candidate_score
+                        + relationship_score
+                        + connectivity_score
+                        + explicit_bonus
+                        - inferred_penalty
+                        - disconnected_penalty
+                        - constraint_penalty
                     )
 
                     selection_item = {
@@ -150,9 +170,7 @@ class BeamSearchWorkflowSelector:
                         "domain_node_type": candidate.get(
                             "node_type"
                         ),
-                        "explicit": bool(
-                            step.explicit
-                        ),
+                        "explicit": bool(step.explicit),
                         "inferred": bool(
                             candidate.get(
                                 "inferred",
@@ -176,43 +194,55 @@ class BeamSearchWorkflowSelector:
                         "connectivity_score": connectivity_score,
                         "constraint_penalty": constraint_penalty,
                         "constraint_violations": violations,
-                        "condition": getattr(step, "condition", ""),
+                        "condition": getattr(
+                            step,
+                            "condition",
+                            "",
+                        ),
+                        "composite": bool(
+                            candidate.get(
+                                "composite",
+                                False,
+                            )
+                        ),
                     }
 
                     new_beams.append(
                         {
                             "selection": (
-                                    beam["selection"]
-                                    + [selection_item]
+                                beam["selection"]
+                                + [selection_item]
                             ),
                             "selected_ids": (
-                                    beam["selected_ids"]
-                                    + [node_id]
+                                beam["selected_ids"]
+                                + [node_id]
                             ),
                             "score": (
-                                    beam["score"]
-                                    + total_increment
+                                beam["score"]
+                                + total_increment
                             ),
                             "constraint_violations": (
-                                    beam[
-                                        "constraint_violations"
-                                    ]
-                                    + violations
+                                beam[
+                                    "constraint_violations"
+                                ]
+                                + violations
                             ),
                         }
                     )
 
             if not new_beams:
-                unsupported_steps.append({
-                    "step_index": step_index,
-                    "prompt_text": step.text,
-                    "reason": "All matching domain operations were already selected earlier in the plan.",
-                })
+                unsupported_steps.append(
+                    {
+                        "step_index": step_index,
+                        "prompt_text": step.text,
+                        "reason": (
+                            "All matching domain operations "
+                            "were already selected earlier "
+                            "in the plan."
+                        ),
+                    }
+                )
                 continue
-
-            # ----------------------------------------------------
-            # Deduplicate equivalent beam states.
-            # ----------------------------------------------------
 
             new_beams = self._deduplicate_beams(
                 new_beams
@@ -235,27 +265,53 @@ class BeamSearchWorkflowSelector:
             }
 
         best_beam = beams[0]
-        prompt = " ".join(step.text for step in semantic_steps if getattr(step, "text", ""))
 
-        inferred_operation_ids = _infer_operations_from_rules(
-            prompt_domain_subgraph,
-            best_beam["selected_ids"],
-            prompt,
+        prompt = " ".join(
+            step.text
+            for step in semantic_steps
+            if getattr(step, "text", "")
+        )
+
+        # Rule-based inference remains separate from composite
+        # expansion. OPERATION_INCLUDES is handled later by the
+        # workflow graph builder.
+        inferred_operation_ids = (
+            _infer_operations_from_rules(
+                prompt_domain_subgraph,
+                best_beam["selected_ids"],
+                prompt,
+            )
         )
 
         for operation_id in inferred_operation_ids:
             if operation_id in best_beam["selected_ids"]:
                 continue
-            if not prompt_domain_subgraph.has_node(operation_id):
+
+            if not prompt_domain_subgraph.has_node(
+                operation_id
+            ):
                 continue
-            node = prompt_domain_subgraph.nodes[operation_id]
-            if not _is_executable_node_type(node.get("node_type")):
+
+            node = prompt_domain_subgraph.nodes[
+                operation_id
+            ]
+
+            if not _is_executable_node_type(
+                node.get("node_type")
+            ):
                 continue
+
             item = self._build_inferred_selection_item(
-                operation_id, node, prompt, source="rule_constraint"
+                operation_id,
+                node,
+                prompt,
+                source="rule_constraint",
             )
+
             best_beam["selection"].append(item)
-            best_beam["selected_ids"].append(operation_id)
+            best_beam["selected_ids"].append(
+                operation_id
+            )
 
         return {
             "beam": beams,
@@ -263,21 +319,18 @@ class BeamSearchWorkflowSelector:
             "unsupported_steps": unsupported_steps,
         }
 
-    def _deduplicate_beams(self,
+    def _deduplicate_beams(
+        self,
         beams,
     ):
-
         best = {}
 
         for beam in beams:
-
             key = tuple(
                 beam["selected_ids"]
             )
 
-            existing = best.get(
-                key
-            )
+            existing = best.get(key)
 
             if (
                 existing is None
@@ -291,17 +344,23 @@ class BeamSearchWorkflowSelector:
         )
 
     def _build_inferred_selection_item(
-            self,
-            operation_id,
-            node_data,
-            prompt_text,
-            source,
+        self,
+        operation_id,
+        node_data,
+        prompt_text,
+        source,
     ):
         return {
             "prompt_text": prompt_text,
             "domain_node_id": operation_id,
-            "domain_node_name": node_data.get("name", operation_id),
-            "domain_node_type": node_data.get("node_type", "Operation"),
+            "domain_node_name": node_data.get(
+                "name",
+                operation_id,
+            ),
+            "domain_node_type": node_data.get(
+                "node_type",
+                "Operation",
+            ),
             "explicit": False,
             "inferred": True,
             "source": source,
@@ -313,4 +372,5 @@ class BeamSearchWorkflowSelector:
             "constraint_penalty": 0.0,
             "constraint_violations": [],
             "condition": "",
+            "composite": False,
         }

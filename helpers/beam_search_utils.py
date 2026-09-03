@@ -513,141 +513,31 @@ def _rule_constraint_penalty(
     return penalty, violations
 
 
-def _prompt_contradicts_rule(prompt, rule):
-    prompt_normalized = str(prompt).lower().strip()
-    rule_normalized = str(rule).lower().strip()
+def _prompt_contradicts_rule(prompt_text, rule_text):
+    prompt = prompt_text.lower().strip()
+    rule = rule_text.lower().strip()
 
-    negation_markers = (
-        "not ",
-        "do not ",
-        "don't ",
-        "without ",
-        "never ",
-        "cannot ",
-        "can't ",
-        "must not ",
-        "should not ",
-        "shouldn't ",
-        "ignore ",
-        "bypass ",
-        "skip ",
+    # A shared domain term is NOT a contradiction.
+    # Contradiction requires an explicit opposite state.
+
+    opposite_pairs = (
+        ("active", "inactive"),
+        ("enabled", "disabled"),
+        ("valid", "invalid"),
+        ("verified", "unverified"),
+        ("approved", "rejected"),
+        ("allowed", "forbidden"),
+        ("authorized", "unauthorized"),
+        ("successful", "failed"),
+        ("success", "failure"),
+        ("completed", "failed"),
     )
 
-    prompt_has_negation = any(
-        marker in prompt_normalized
-        for marker in negation_markers
-    )
-
-    rule_has_negation = any(
-        marker in rule_normalized
-        for marker in negation_markers
-    )
-
-    opposites = {
-        "active": {
-            "inactive",
-            "disabled",
-            "blocked",
-            "deactivated",
-        },
-        "inactive": {
-            "active",
-            "enabled",
-            "activated",
-        },
-        "enabled": {
-            "disabled",
-            "inactive",
-            "blocked",
-        },
-        "disabled": {
-            "enabled",
-            "active",
-        },
-        "valid": {
-            "invalid",
-            "unverified",
-        },
-        "invalid": {
-            "valid",
-            "verified",
-        },
-        "verified": {
-            "unverified",
-            "invalid",
-        },
-        "approved": {
-            "rejected",
-            "denied",
-        },
-        "rejected": {
-            "approved",
-        },
-        "allowed": {
-            "forbidden",
-            "blocked",
-            "disallowed",
-        },
-        "forbidden": {
-            "allowed",
-            "permitted",
-        },
-    }
-
-    prompt_tokens = _tokenize(prompt_normalized)
-    rule_tokens = _tokenize(rule_normalized)
-
-    # --------------------------------------------------------
-    # Opposite states.
-    # --------------------------------------------------------
-
-    for rule_state, opposite_states in opposites.items():
-
-        if rule_state not in rule_tokens:
-            continue
-
-        if prompt_tokens & opposite_states:
-
-            # Rule and prompt agree if the rule explicitly
-            # forbids the rule state and prompt uses its opposite.
-            if rule_has_negation:
-                continue
-
+    for positive, negative in opposite_pairs:
+        if positive in prompt and negative in rule:
             return True
 
-    # --------------------------------------------------------
-    # Same state but opposite negation.
-    #
-    # Rule:   must not be active
-    # Prompt: activate account
-    #
-    # Rule:   must be active
-    # Prompt: do not activate account
-    # --------------------------------------------------------
-
-    if rule_tokens & prompt_tokens:
-
-        if rule_has_negation != prompt_has_negation:
-            return True
-
-    # --------------------------------------------------------
-    # Generic explicit negation.
-    # --------------------------------------------------------
-
-    if prompt_has_negation or rule_has_negation:
-
-        shared = prompt_tokens & rule_tokens
-
-        generic = {
-            "the", "a", "an",
-            "must", "should",
-            "not", "do", "does",
-            "be", "is", "are",
-            "to", "for", "and",
-            "or", "of", "on", "in",
-        }
-
-        if shared - generic:
+        if negative in prompt and positive in rule:
             return True
 
     return False

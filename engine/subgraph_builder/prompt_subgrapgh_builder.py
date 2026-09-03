@@ -1,57 +1,102 @@
-import math
 import networkx as nx
 
-from helpers.similarity_utils import _cosine_similarity, _lexical_similarity, _combined_score, _relationship_relevance, \
-    _node_text
+from helpers.similarity_utils import (
+    _cosine_similarity,
+    _lexical_similarity,
+    _combined_score,
+    _relationship_relevance,
+    _node_text,
+)
 from helpers.utils import _add_domain_node
 from models import SemanticInterpretation
 
+
+COMPOSITE_RELATIONSHIP = "OPERATION_INCLUDES"
+
+
 class PromptSubGraphBuilder:
-    def __init__(self, embedding_service, domain_graph_service):
+
+    def __init__(
+        self,
+        embedding_service,
+        domain_graph_service,
+    ):
         self._embedding_service = embedding_service
         self._domain_graph_service = domain_graph_service
 
-    def build (self,
-            interpretation: SemanticInterpretation,
-            k=5,
-            neighborhood_depth=1,
+    # =========================================================
+    # Build
+    # =========================================================
+
+    def build(
+        self,
+        interpretation: SemanticInterpretation,
+        k=5,
+        neighborhood_depth=1,
     ):
+
         prompt_domain_subgraph = nx.DiGraph()
 
         candidate_map = {}
 
-        candidates_debug = []
-        context_attachments = []
-        constraint_edges = []
-        conditional_dependencies = []
+        for step_index, step in enumerate(
+            interpretation.steps
+        ):
 
-        for step_index, step in enumerate(interpretation.steps):
-            step_embedding = self._embedding_service.encode(step.text)
+            step_embedding = (
+                self._embedding_service.encode(
+                    step.text
+                )
+            )
 
-            candidates = self._domain_graph_service.candidate_nodes(step.text, step_embedding, k=max(k, 25))
+            # -------------------------------------------------
+            # Retrieve a larger candidate set before truncation.
+            # -------------------------------------------------
+
+            candidates = (
+                self._domain_graph_service.candidate_nodes(
+                    step.text,
+                    step_embedding,
+                    k=max(k, 25),
+                )
+            )
 
             step_candidates = []
 
             for candidate in candidates:
+
                 node = candidate.node
-                candidate_embedding = candidate.embedding
+
+                candidate_embedding = (
+                    candidate.embedding
+                )
 
                 if candidate_embedding is None:
-                    candidate_embedding = self._embedding_service.encode(
-                        _node_text(node)
+                    candidate_embedding = (
+                        self._embedding_service.encode(
+                            _node_text(node)
+                        )
                     )
 
-                semantic_similarity = _cosine_similarity(
-                    candidate_embedding,
-                    step_embedding,
+                semantic_similarity = (
+                    _cosine_similarity(
+                        candidate_embedding,
+                        step_embedding,
+                    )
                 )
 
-                lexical_similarity = _lexical_similarity(
-                    step.text,
-                    node
+                lexical_similarity = (
+                    _lexical_similarity(
+                        step.text,
+                        node,
+                    )
                 )
 
-                score = _combined_score(lexical_similarity, semantic_similarity, candidate.score)
+                score = _combined_score(
+                    lexical_similarity,
+                    semantic_similarity,
+                    candidate.score,
+                )
 
                 item = {
                     "node_id": node.id,
@@ -60,33 +105,20 @@ class PromptSubGraphBuilder:
                     "score": score,
                     "lexical_score": lexical_similarity,
                     "semantic_score": semantic_similarity,
-                    "explicit": bool(step.explicit),
-                    "inferred": not bool(step.explicit),
+                    "explicit": bool(
+                        step.explicit
+                    ),
+                    "inferred": not bool(
+                        step.explicit
+                    ),
                     "source": "direct",
                     "prompt_text": step.text,
                 }
 
-                existing_candidate = next(
-                    (
-                        candidate
-                        for candidate in step_candidates
-                        if candidate["node_id"] == item["node_id"]
-                    ),
-                    None,
+                self._add_candidate(
+                    step_candidates,
+                    item,
                 )
-
-                if existing_candidate is None:
-                    step_candidates.append(item)
-                elif item["score"] > existing_candidate["score"]:
-                    item["explicit"] = (
-                            item["explicit"]
-                            or existing_candidate["explicit"]
-                    )
-                    item["inferred"] = not item["explicit"]
-
-                    index = step_candidates.index(existing_candidate)
-                    step_candidates[index] = item
-
 
                 _add_domain_node(
                     prompt_domain_subgraph,
@@ -94,20 +126,80 @@ class PromptSubGraphBuilder:
                     item,
                 )
 
-            prompt_domain_subgraph, inferred_candidates = (
-                self.expand_neighborhood(
-                    prompt_domain_subgraph,
-                    step,
-                    step_embedding,
-                    step_candidates,
-                    neighborhood_depth,
+            # -------------------------------------------------
+            # Expand the candidate neighborhood.
+            # -------------------------------------------------
+
+            (
+                prompt_domain_subgraph,
+                inferred_candidates,
+            ) = self.expand_neighborhood(
+                prompt_domain_subgraph,
+                step,
+                step_embedding,
+                step_candidates,
+                neighborhood_depth,
+            )
+
+            step_candidates.extend(
+                inferred_candidates
+            )
+
+            # -------------------------------------------------
+            # IMPORTANT:
+            #
+            # If a composite operation is present in the graph,
+            # make sure it survives candidate ranking.
+            #
+            # Example:
+            #
+            # transfer_funds
+            #     |
+            #     +-- retrieve_account
+            #     +-- debit_account
+            #     +-- credit_account
+            #
+            # "transfer funds" means transfer_funds, not one
+            # arbitrary implementation child.
+            # -------------------------------------------------
+
+            self._ensure_composite_parents(
+                prompt_domain_subgraph,
+                step,
+                step_embedding,
+                step_candidates,
+            )
+
+            # -------------------------------------------------
+            # Deduplicate.
+            # -------------------------------------------------
+
+            step_candidates = (
+                self._deduplicate(
+                    step_candidates
                 )
             )
 
-            step_candidates.extend(inferred_candidates)
+            # -------------------------------------------------
+            # Exact/direct candidates get priority.
+            # -------------------------------------------------
 
             step_candidates.sort(
-                key=lambda x: x["score"],
+                key=lambda candidate: (
+                    candidate.get(
+                        "lexical_score",
+                        0.0,
+                    ) >= 0.90,
+
+                    candidate.get(
+                        "source"
+                    ) == "direct",
+
+                    candidate.get(
+                        "score",
+                        0.0,
+                    ),
+                ),
                 reverse=True,
             )
 
@@ -115,48 +207,447 @@ class PromptSubGraphBuilder:
                 : max(k * 2, 10)
             ]
 
-            candidate_map[step_index] = {
+            candidate_map[
+                step_index
+            ] = {
                 "step_embedding": step_embedding,
                 "candidates": step_candidates,
             }
 
-        prompt_domain_subgraph = self.set_execution_order(
-            interpretation,
-            prompt_domain_subgraph,
-            candidate_map)
+        prompt_domain_subgraph = (
+            self.set_execution_order(
+                interpretation,
+                prompt_domain_subgraph,
+                candidate_map,
+            )
+        )
 
-        candidate_plan = {
-            "prompt_domain_subgraph": prompt_domain_subgraph,
+        return {
+            "prompt_domain_subgraph": (
+                prompt_domain_subgraph
+            ),
             "candidate_map": candidate_map,
             "semantic_steps": interpretation.steps,
             "intent": interpretation.intent,
         }
 
-        return candidate_plan
+    # =========================================================
+    # Candidate helpers
+    # =========================================================
+
+    def _add_candidate(
+        self,
+        candidates,
+        item,
+    ):
+
+        existing = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate["node_id"]
+                == item["node_id"]
+            ),
+            None,
+        )
+
+        if existing is None:
+            candidates.append(item)
+            return
+
+        if (
+            item["score"]
+            > existing["score"]
+        ):
+            index = candidates.index(
+                existing
+            )
+
+            candidates[index] = item
+
+    def _deduplicate(
+        self,
+        candidates,
+    ):
+
+        best = {}
+
+        for candidate in candidates:
+
+            node_id = candidate[
+                "node_id"
+            ]
+
+            existing = best.get(
+                node_id
+            )
+
+            if (
+                existing is None
+                or candidate["score"]
+                > existing["score"]
+            ):
+                best[node_id] = candidate
+
+        return list(
+            best.values()
+        )
+
+    # =========================================================
+    # Composite operation discovery
+    # =========================================================
+
+    def _ensure_composite_parents(
+        self,
+        graph,
+        step,
+        step_embedding,
+        step_candidates,
+    ):
+        """
+        Ensure that an operation that owns executable operations
+        through OPERATION_INCLUDES is available as the semantic root.
+        """
+
+        candidate_ids = {
+            candidate["node_id"]
+            for candidate in step_candidates
+        }
+
+        # -----------------------------------------------------
+        # Inspect every operation already present in the graph.
+        # -----------------------------------------------------
+
+        operation_ids = [
+            node_id
+            for node_id, data
+            in graph.nodes(data=True)
+            if data.get("node_type")
+            in {
+                "Operation",
+                "operation",
+            }
+        ]
+
+        for operation_id in operation_ids:
+
+            children = []
+
+            for _, child_id, edge_data in (
+                graph.out_edges(
+                    operation_id,
+                    data=True,
+                )
+            ):
+
+                if edge_data.get(
+                    "relation"
+                ) != COMPOSITE_RELATIONSHIP:
+                    continue
+
+                if not graph.has_node(
+                    child_id
+                ):
+                    continue
+
+                child_type = (
+                    graph.nodes[
+                        child_id
+                    ].get("node_type")
+                )
+
+                if child_type in {
+                    "Operation",
+                    "operation",
+                }:
+                    children.append(
+                        child_id
+                    )
+
+            if not children:
+                continue
+
+            node = (
+                self._domain_graph_service.get_node(
+                    operation_id
+                )
+            )
+
+            if node is None:
+                continue
+
+            semantic_score = 0.0
+
+            node_embedding = node.embedding
+
+            if node_embedding is None:
+                node_embedding = (
+                    self._embedding_service.encode(
+                        _node_text(node)
+                    )
+                )
+
+            if node_embedding is not None:
+                semantic_score = (
+                    _cosine_similarity(
+                        node_embedding,
+                        step_embedding,
+                    )
+                )
+
+            lexical_score = (
+                _lexical_similarity(
+                    step.text,
+                    node,
+                )
+            )
+
+            # -------------------------------------------------
+            # Do NOT promote arbitrary composite operations.
+            #
+            # Exact name/alias matches are authoritative.
+            # Otherwise require meaningful semantic similarity.
+            # -------------------------------------------------
+
+            if (
+                lexical_score < 0.50
+                and semantic_score < 0.60
+            ):
+                continue
+
+            score = (
+                0.55 * semantic_score
+                + 0.45 * lexical_score
+            )
+
+            # Exact lexical identity should dominate.
+            if lexical_score >= 0.90:
+                score = max(
+                    score,
+                    1.0,
+                )
+
+            item = {
+                "node_id": operation_id,
+                "name": node.name,
+                "node_type": node.node_type,
+                "score": score,
+                "lexical_score": lexical_score,
+                "semantic_score": semantic_score,
+                "explicit": True,
+                "inferred": False,
+                "source": "direct",
+                "prompt_text": step.text,
+                "composite": True,
+                "composite_children": children,
+            }
+
+            existing = next(
+                (
+                    candidate
+                    for candidate in step_candidates
+                    if candidate["node_id"]
+                    == operation_id
+                ),
+                None,
+            )
+
+            if existing is None:
+                step_candidates.append(
+                    item
+                )
+            else:
+                existing["score"] = max(
+                    existing["score"],
+                    score,
+                )
+
+                existing[
+                    "lexical_score"
+                ] = max(
+                    existing.get(
+                        "lexical_score",
+                        0.0,
+                    ),
+                    lexical_score,
+                )
+
+                existing[
+                    "semantic_score"
+                ] = max(
+                    existing.get(
+                        "semantic_score",
+                        0.0,
+                    ),
+                    semantic_score,
+                )
+
+                existing[
+                    "composite"
+                ] = True
+
+                existing[
+                    "composite_children"
+                ] = children
+
+            # -------------------------------------------------
+            # Ensure the composite node is present.
+            # -------------------------------------------------
+
+            _add_domain_node(
+                graph,
+                node,
+                item,
+            )
+
+            # -------------------------------------------------
+            # Ensure all included children and their edges exist.
+            # -------------------------------------------------
+
+            for child_id in children:
+
+                child = (
+                    self._domain_graph_service.get_node(
+                        child_id
+                    )
+                )
+
+                if child is None:
+                    continue
+
+                _add_domain_node(
+                    graph,
+                    child,
+                    None,
+                )
+
+                graph.add_edge(
+                    operation_id,
+                    child_id,
+                    relation=COMPOSITE_RELATIONSHIP,
+                    inferred_context=True,
+                    origin="domain",
+                )
+
+                # -------------------------------------------------
+                # IMPORTANT:
+                #
+                # Pull the child's immediate operation relationships
+                # too. If the ontology contains:
+                #
+                # A -> B OPERATION_PRECEDES
+                #
+                # we need it in the prompt subgraph for ordering.
+                # -------------------------------------------------
+
+                child_relationships = (
+                    self._domain_graph_service.neighborhood(
+                        child_id,
+                        1,
+                    )
+                )
+
+                for relationship in child_relationships:
+
+                    source = (
+                        self._domain_graph_service.get_node(
+                            relationship.source_id
+                        )
+                    )
+
+                    target = (
+                        self._domain_graph_service.get_node(
+                            relationship.target_id
+                        )
+                    )
+
+                    if (
+                        source is None
+                        or target is None
+                    ):
+                        continue
+
+                    if (
+                        source.node_type
+                        not in {
+                            "Operation",
+                            "operation",
+                        }
+                        or target.node_type
+                        not in {
+                            "Operation",
+                            "operation",
+                        }
+                    ):
+                        continue
+
+                    _add_domain_node(
+                        graph,
+                        source,
+                        None,
+                    )
+
+                    _add_domain_node(
+                        graph,
+                        target,
+                        None,
+                    )
+
+                    graph.add_edge(
+                        source.id,
+                        target.id,
+                        relation=relationship.relation,
+                        inferred_context=True,
+                        origin="domain",
+                    )
+
+    # =========================================================
+    # Neighborhood
+    # =========================================================
 
     def expand_neighborhood(
-            self,
-            prompt_subgraph,
-            step,
-            step_embedding,
-            step_candidates,
-            neighborhood_depth,
+        self,
+        prompt_subgraph,
+        step,
+        step_embedding,
+        step_candidates,
+        neighborhood_depth,
     ):
+
         neighborhood_seed_ids = [
             item["node_id"]
             for item in step_candidates
         ]
 
         inferred_candidates = []
+
         for seed_id in neighborhood_seed_ids:
 
-            step_candidate_neighbors = self._domain_graph_service.neighborhood(seed_id, neighborhood_depth)
+            relationships = (
+                self._domain_graph_service.neighborhood(
+                    seed_id,
+                    neighborhood_depth,
+                )
+            )
 
-            for step_candidate_neighbor in step_candidate_neighbors:
-                source = self._domain_graph_service.get_node(step_candidate_neighbor.source_id)
-                target = self._domain_graph_service.get_node(step_candidate_neighbor.target_id)
+            for relationship in relationships:
 
-                if source is None or target is None:
+                source = (
+                    self._domain_graph_service.get_node(
+                        relationship.source_id
+                    )
+                )
+
+                target = (
+                    self._domain_graph_service.get_node(
+                        relationship.target_id
+                    )
+                )
+
+                if (
+                    source is None
+                    or target is None
+                ):
                     continue
 
                 _add_domain_node(
@@ -171,11 +662,10 @@ class PromptSubGraphBuilder:
                     None,
                 )
 
-                # Preserve the ontology edge.
                 prompt_subgraph.add_edge(
                     source.id,
                     target.id,
-                    relation=step_candidate_neighbor.relation,
+                    relation=relationship.relation,
                     inferred_context=True,
                     origin="domain",
                 )
@@ -187,31 +677,47 @@ class PromptSubGraphBuilder:
                         step_candidates,
                         source,
                         target,
-                        step_candidate_neighbor,
+                        relationship,
                     )
                 )
 
-        return prompt_subgraph, inferred_candidates
+        return (
+            prompt_subgraph,
+            inferred_candidates,
+        )
+
+    # =========================================================
+    # Inferred candidates
+    # =========================================================
 
     def infer_candidates(
-            self,
-            step,
-            step_embedding,
-            step_candidates,
-            source,
-            target,
-            relationship,
+        self,
+        step,
+        step_embedding,
+        step_candidates,
+        source,
+        target,
+        relationship,
     ):
+
         inferred_candidates = []
 
+        existing_ids = {
+            item["node_id"]
+            for item in step_candidates
+        }
+
         for neighbor in (
-                source,
-                target,
+            source,
+            target,
         ):
 
-            if neighbor.id in {
-                item["node_id"]
-                for item in step_candidates
+            if neighbor.id in existing_ids:
+                continue
+
+            if neighbor.node_type not in {
+                "Operation",
+                "operation",
             }:
                 continue
 
@@ -219,9 +725,6 @@ class PromptSubGraphBuilder:
                 neighbor.embedding
             )
 
-            # Some graph implementations may not store
-            # embeddings on nodes. Generate one from the
-            # semantic text if necessary.
             if neighbor_embedding is None:
                 neighbor_embedding = (
                     self._embedding_service.encode(
@@ -229,102 +732,158 @@ class PromptSubGraphBuilder:
                     )
                 )
 
-            lexical_score = _lexical_similarity(
-                step.text,
-                neighbor
+            lexical_score = (
+                _lexical_similarity(
+                    step.text,
+                    neighbor,
+                )
             )
 
-            semantic_score = _cosine_similarity(
-                step_embedding,
-                neighbor_embedding,
+            semantic_score = (
+                _cosine_similarity(
+                    step_embedding,
+                    neighbor_embedding,
+                )
             )
 
-            relation_score = _relationship_relevance(
-                relationship.relation
+            relation_score = (
+                _relationship_relevance(
+                    relationship.relation
+                )
             )
 
             contextual_score = (
-                    0.50 * semantic_score
-                    + 0.25 * lexical_score
-                    + 0.25 * relation_score
+                0.50 * semantic_score
+                + 0.25 * lexical_score
+                + 0.25 * relation_score
             )
 
-            # Don't pull every arbitrary neighbor into
-            # the workflow.
-            #
-            # The threshold is deliberately permissive
-            # because this is contextual inference rather
-            # than final function matching.
             if contextual_score < 0.25:
                 continue
 
-            inferred_item = {
-                "node_id": neighbor.id,
-                "name": neighbor.name,
-                "node_type": neighbor.node_type,
-                "score": contextual_score,
-                "lexical_score": lexical_score,
-                "semantic_score": semantic_score,
-                "explicit": False,
-                "inferred": True,
-                "source": "neighborhood",
-                "prompt_text": step.text,
-                "relation_score": relation_score,
-            }
-
-            inferred_candidates.append(inferred_item)
+            inferred_candidates.append(
+                {
+                    "node_id": neighbor.id,
+                    "name": neighbor.name,
+                    "node_type": neighbor.node_type,
+                    "score": contextual_score,
+                    "lexical_score": lexical_score,
+                    "semantic_score": semantic_score,
+                    "explicit": False,
+                    "inferred": True,
+                    "source": "neighborhood",
+                    "prompt_text": step.text,
+                    "relation_score": relation_score,
+                }
+            )
 
         return inferred_candidates
 
+    # =========================================================
+    # Execution dependencies
+    # =========================================================
+
     def set_execution_order(
-            self,
-            interpretation: SemanticInterpretation,
-            prompt_subgraph,
-            candidate_map):
+        self,
+        interpretation,
+        prompt_subgraph,
+        candidate_map,
+    ):
 
-        for dependency in interpretation.dependencies:
+        for dependency in (
+            interpretation.dependencies
+        ):
 
-            before = dependency.get("before")
-            after = dependency.get("after")
+            before = dependency.get(
+                "before"
+            )
+
+            after = dependency.get(
+                "after"
+            )
 
             relation = dependency.get(
                 "relation",
-                "PROMPT_DEPENDENCY"
+                "PROMPT_DEPENDENCY",
             )
 
             if not before or not after:
                 continue
 
-            before_candidate_embedding = self._embedding_service.encode(before)
-            after_candidate_embedding = self._embedding_service.encode(after)
-
-            before_node = self.best_candidate_for_embedding(
-                candidate_map,
-                before_candidate_embedding,
+            before_embedding = (
+                self._embedding_service.encode(
+                    before
+                )
             )
 
-            after_node = self.best_candidate_for_embedding(
-                candidate_map,
-                after_candidate_embedding,
+            after_embedding = (
+                self._embedding_service.encode(
+                    after
+                )
             )
 
-            if before_node is None or after_node is None:
+            before_node = (
+                self.best_candidate_for_embedding(
+                    candidate_map,
+                    before_embedding,
+                )
+            )
+
+            after_node = (
+                self.best_candidate_for_embedding(
+                    candidate_map,
+                    after_embedding,
+                )
+            )
+
+            if (
+                before_node is None
+                or after_node is None
+            ):
                 continue
 
             if before_node == after_node:
                 continue
 
-            # For PROMPT_CONDITION, we store the condition as metadata instead of creating an edge
             if relation == "PROMPT_CONDITION":
-                condition = dependency.get("condition", "")
-                # Store condition on the target node for downstream processing
-                if prompt_subgraph.has_node(after_node):
-                    prompt_subgraph.nodes[after_node]["condition"] = condition
-                    prompt_subgraph.nodes[after_node]["is_conditional"] = True
-                    # Also mark the source node as the condition check
-                    if prompt_subgraph.has_node(before_node):
-                        prompt_subgraph.nodes[before_node]["is_condition_check"] = True
-                        prompt_subgraph.nodes[before_node]["condition_for"] = after_node
+
+                condition = dependency.get(
+                    "condition",
+                    "",
+                )
+
+                if prompt_subgraph.has_node(
+                    after_node
+                ):
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
+                        "condition"
+                    ] = condition
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
+                        "is_conditional"
+                    ] = True
+
+                if prompt_subgraph.has_node(
+                    before_node
+                ):
+
+                    prompt_subgraph.nodes[
+                        before_node
+                    ][
+                        "is_condition_check"
+                    ] = True
+
+                    prompt_subgraph.nodes[
+                        before_node
+                    ][
+                        "condition_for"
+                    ] = after_node
+
                 continue
 
             prompt_subgraph.add_edge(
@@ -337,18 +896,32 @@ class PromptSubGraphBuilder:
 
         return prompt_subgraph
 
-    def best_candidate_for_embedding(
-            self,
-            candidate_map,
-            dependency_embedding,
-    ):
-        best_entry = None
-        best_similarity = float("-inf")
+    # =========================================================
+    # Dependency candidate
+    # =========================================================
 
-        for entry in candidate_map.values():
-            similarity = _cosine_similarity(
-                dependency_embedding,
-                entry["step_embedding"],
+    def best_candidate_for_embedding(
+        self,
+        candidate_map,
+        dependency_embedding,
+    ):
+
+        best_entry = None
+        best_similarity = float(
+            "-inf"
+        )
+
+        for entry in (
+            candidate_map.values()
+        ):
+
+            similarity = (
+                _cosine_similarity(
+                    dependency_embedding,
+                    entry[
+                        "step_embedding"
+                    ],
+                )
             )
 
             if similarity > best_similarity:
@@ -358,17 +931,25 @@ class PromptSubGraphBuilder:
         if best_entry is None:
             return None
 
-        candidates = best_entry["candidates"]
+        candidates = best_entry[
+            "candidates"
+        ]
 
         if not candidates:
             return None
 
         best_candidate = max(
             candidates,
-            key=lambda candidate: candidate.get("score", 0.0),
+            key=lambda candidate:
+                candidate.get(
+                    "score",
+                    0.0,
+                ),
         )
 
-        if best_similarity < 0.5:  # tune experimentally
+        if best_similarity < 0.5:
             return None
 
-        return best_candidate.get("node_id")
+        return best_candidate.get(
+            "node_id"
+        )
