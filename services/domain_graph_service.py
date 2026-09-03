@@ -164,3 +164,6 @@ class DomainGraphService:
 
     def neighborhood(self, node_id, depth):
         return self._domain_graph_accessor.neighborhood(node_id, depth)
+
+    def get_node(self, node_id) -> DomainNode | None:
+        return self._domain_graph_accessor.get_node(node_id)

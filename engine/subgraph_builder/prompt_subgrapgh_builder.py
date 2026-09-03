@@ -34,10 +34,22 @@ class PromptSubGraphBuilder:
 
             for candidate in candidates:
                 node = candidate.node
-                candidate_embedding = self._domain_graph_service._get_or_create_embedding(candidate)
+                candidate_embedding = candidate.embedding
 
-                semantic_similarity = _cosine_similarity(candidate_embedding, step_embedding)
-                lexical_similarity = _lexical_similarity(candidate.text, step.text)
+                if candidate_embedding is None:
+                    candidate_embedding = self._embedding_service.encode(
+                        _node_text(node)
+                    )
+
+                semantic_similarity = _cosine_similarity(
+                    candidate_embedding,
+                    step_embedding,
+                )
+
+                lexical_similarity = _lexical_similarity(
+                    step.text,
+                    node
+                )
 
                 score = _combined_score(lexical_similarity, semantic_similarity, candidate.score)
 
