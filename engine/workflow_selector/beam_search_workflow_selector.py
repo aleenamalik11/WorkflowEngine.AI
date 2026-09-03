@@ -1,6 +1,8 @@
+import networkx as nx
+
 from helpers.beam_search_utils import _is_executable_candidate, EXPLICIT_DIRECT_BONUS, INFERRED_PENALTY, \
     DISCONNECTED_PENALTY, _relationship_compatibility, _connectivity_score, _rule_constraint_penalty, \
-    _is_executable_node_type, _infer_operations_from_rules
+    _is_executable_node_type, _infer_operations_from_rules, _is_executable_selection_item
 
 
 class BeamSearchWorkflowSelector:

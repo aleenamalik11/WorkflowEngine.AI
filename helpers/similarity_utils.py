@@ -1,6 +1,5 @@
 import re
 
-import np
 import numpy as np
 
 from helpers.ontology_semantics import semantics_for

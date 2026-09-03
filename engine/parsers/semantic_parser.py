@@ -13,10 +13,10 @@ class SimpleSemanticParser:
         self._nlp = nlp
 
     def parse(self, prompt: str, domain_context=None):
-        steps, dependencies = _extract_explicit_steps(prompt)
+        steps, dependencies = _extract_explicit_steps(self, prompt)
         entities = []
         if self.use_nlp:
-            entities = _nlp_entities(prompt)
+            entities = _nlp_entities(self, prompt)
         return SemanticInterpretation(
             intent=steps[0].text if steps else str(prompt or "").strip(),
             steps=steps,
@@ -76,12 +76,15 @@ class SimpleSemanticParser:
 
         return self._make_steps(self._split_actions(sentence))
 
-    @staticmethod
     def _split_embedded_conditional(self, sentence):
-        nlp = _load_nlp()
+        nlp = _load_nlp(self)
         if nlp is None:
             return None
         return ConditionalClauseSplitter(nlp).split(sentence)
+
+    def _load_nlp(self):
+        """Expose the shared lazy NLP loader to parser helper functions."""
+        return _load_nlp(self)
 
     def _split_actions(self, text):
         if ";" in text:

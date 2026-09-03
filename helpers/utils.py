@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 
+from models import DomainNode
+
 ###############################################################
 # Function text conversion
 ###############################################################
