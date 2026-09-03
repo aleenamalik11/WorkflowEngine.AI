@@ -111,6 +111,20 @@ def _normalize_text(
 
 
 def _node_text(node):
+    if isinstance(node, dict):
+        parts = [
+            node.get("name", ""),
+            node.get("description", ""),
+        ]
+
+        parts.extend(
+            node.get("aliases") or []
+        )
+
+        return " ".join(
+            p for p in parts if p
+        )
+
     parts = [
         node.name or "",
         node.description or "",

@@ -231,9 +231,7 @@ class PromptSubGraphBuilder:
 
             lexical_score = _lexical_similarity(
                 step.text,
-                neighbor.name,
-                neighbor.aliases,
-                neighbor.description,
+                neighbor
             )
 
             semantic_score = _cosine_similarity(

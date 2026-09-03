@@ -122,29 +122,27 @@ DIRECT_NAME_ALIGNMENT_BONUS = 0.12
 
 
 def _is_executable_selection_item(
-        cls,
         item,
 ):
     node_type = item.get(
         "domain_node_type"
     )
 
-    return cls._is_executable_node_type(
+    return _is_executable_node_type(
         node_type
     )
 
 
 def _is_executable_node_type(
-        cls,
         node_type,
 ):
     return node_type in (
-        cls.EXECUTABLE_NODE_TYPES
+        EXECUTABLE_NODE_TYPES
     )
 
-def _is_contextual_operation_path(cls, graph, path):
+def _is_contextual_operation_path(graph, path):
     for node_id in path:
-        if not cls._is_executable_node_type(
+        if not _is_executable_node_type(
                 graph.nodes[node_id].get("node_type")
         ):
             return False
@@ -152,13 +150,12 @@ def _is_contextual_operation_path(cls, graph, path):
     for source, target in zip(path, path[1:]):
         if graph.edges[source, target].get(
                 "relation"
-        ) not in cls.INFERRED_OPERATION_RELATIONSHIPS:
+        ) not in INFERRED_OPERATION_RELATIONSHIPS:
             return False
 
     return True
 
 def _is_executable_candidate(
-        cls,
         graph,
         candidate,
 ):
@@ -183,10 +180,10 @@ def _is_executable_candidate(
             or node_data.get("node_type")
     )
 
-    if node_type in cls.EXECUTABLE_NODE_TYPES:
+    if node_type in EXECUTABLE_NODE_TYPES:
         return True
 
-    if node_type in cls.NON_EXECUTABLE_NODE_TYPES:
+    if node_type in NON_EXECUTABLE_NODE_TYPES:
         return False
 
     return False

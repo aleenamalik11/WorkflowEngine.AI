@@ -263,7 +263,7 @@ class BeamSearchWorkflowSelector:
             "unsupported_steps": unsupported_steps,
         }
 
-    def _deduplicate_beams(
+    def _deduplicate_beams(self,
         beams,
     ):
 
@@ -291,7 +291,7 @@ class BeamSearchWorkflowSelector:
         )
 
     def _build_inferred_selection_item(
-            cls,
+            self,
             operation_id,
             node_data,
             prompt_text,
