@@ -1,9 +1,18 @@
 import uuid
 
 from models import (
-    FunctionMatch,
     WorkflowFunctionDetails,
 )
+
+from helpers.beam_search_utils import (
+    INFERRED_OPERATION_RELATIONSHIPS,
+)
+
+
+COMPOSITE_RELATIONSHIP = "OPERATION_INCLUDES"
+
+PROMPT_DEPENDENCY = "PROMPT_DEPENDENCY"
+PROMPT_CONDITION = "PROMPT_CONDITION"
 
 
 class WorkflowGenerator:
@@ -73,9 +82,13 @@ class WorkflowGenerator:
                 if (
                     node.get("id")
                     == node_id
+                    or node.get("Id")
+                    == node_id
                 ):
 
-                    return dict(node)
+                    return dict(
+                        node
+                    )
 
         return {}
 
@@ -128,7 +141,6 @@ class WorkflowGenerator:
                 ):
 
                     source = edge[0]
-
                     target = edge[1]
 
                     data = (
@@ -159,10 +171,12 @@ class WorkflowGenerator:
                     edges.append(
                         (
                             edge.get(
-                                "source"
+                                "source",
+                                edge.get("Source"),
                             ),
                             edge.get(
-                                "target"
+                                "target",
+                                edge.get("Target"),
                             ),
                             edge,
                         )
@@ -186,17 +200,31 @@ class WorkflowGenerator:
 
         IMPORTANT:
 
-        This method never changes the semantic node.
+        Function matching NEVER changes the semantic identity
+        of the node.
 
-        The semantic node is the source of truth.
+        Example:
 
-        Function matching only determines whether there is an
-        implementation attached to that node.
+            semantic node:
+                Notify Customer
+
+            function matcher:
+                send_notification
+
+        The workflow node remains:
+
+            Name = Notify Customer
+
+        and send_notification is stored only inside
+        FunctionDetails.
         """
 
         semantic_name = (
             node_data.get(
                 "name"
+            )
+            or node_data.get(
+                "Name"
             )
             or node_data.get(
                 "domain_node_name"
@@ -211,15 +239,11 @@ class WorkflowGenerator:
             node_data.get(
                 "description"
             )
+            or node_data.get(
+                "Description"
+            )
             or ""
         )
-
-        # ------------------------------------------------------
-        # Prefer the semantic/domain description when available.
-        #
-        # This gives the function matcher richer meaning without
-        # changing the identity of the node.
-        # ------------------------------------------------------
 
         match_text = (
             semantic_name
@@ -245,7 +269,7 @@ class WorkflowGenerator:
         )
 
     # ==========================================================
-    # Generate Workflow JSON
+    # Generate Workflow
     # ==========================================================
 
     def generate(
@@ -254,20 +278,17 @@ class WorkflowGenerator:
         workflow_name="Generated Workflow",
     ):
         """
-        Stage 10/11.
+        Converts the Stage 9 execution graph into the final
+        workflow representation.
 
-        Converts the Stage 9 semantic execution plan into the
-        final workflow model.
+        Stages 8/9 determine WHAT the workflow means.
 
-        Architectural rule:
+        Stage 10 determines whether each semantic node has a
+        registered implementation.
 
-            Stage 8/9 decides WHAT the workflow means.
+        Stage 11 creates workflow transitions.
 
-            Stage 10 decides WHETHER each semantic node has an
-            executable registered function.
-
-        Stage 10 must never replace a semantic node with another
-        node merely because a function happens to be similar.
+        Function matching NEVER replaces a semantic/domain node.
         """
 
         # ------------------------------------------------------
@@ -302,15 +323,27 @@ class WorkflowGenerator:
 
             execution_order = []
 
+        if graph is None:
+
+            return {
+                "Id": str(
+                    uuid.uuid4()
+                ),
+                "Name": workflow_name,
+                "Version": "1.0",
+                "StartNodeId": None,
+                "Inputs": [],
+                "Nodes": [],
+                "Connections": {},
+            }
+
         # ------------------------------------------------------
-        # Fallback only when the planner did not provide an
-        # execution order.
+        # Fallback execution order.
+        #
+        # Normally Stage 9 always provides this.
         # ------------------------------------------------------
 
-        if (
-            not execution_order
-            and graph is not None
-        ):
+        if not execution_order:
 
             if hasattr(
                 graph,
@@ -347,14 +380,17 @@ class WorkflowGenerator:
                     execution_order = [
                         node.get(
                             "id",
-                            index,
+                            node.get(
+                                "Id",
+                                index,
+                            ),
                         )
                         for index, node
                         in enumerate(nodes)
                     ]
 
         # ------------------------------------------------------
-        # Workflow root
+        # Workflow root.
         # ------------------------------------------------------
 
         workflow = {
@@ -378,10 +414,6 @@ class WorkflowGenerator:
 
         workflow_node_lookup = {}
 
-        if graph is None:
-
-            return workflow
-
         # ======================================================
         # STAGE 10
         # Semantic node -> registered function
@@ -396,8 +428,11 @@ class WorkflowGenerator:
                 )
             )
 
+            if not node_data:
+                continue
+
             # --------------------------------------------------
-            # The semantic node name is authoritative.
+            # Semantic node is authoritative.
             # --------------------------------------------------
 
             (
@@ -408,8 +443,14 @@ class WorkflowGenerator:
                 node_data
             )
 
+            if not semantic_name:
+
+                semantic_name = str(
+                    node_id
+                )
+
             # --------------------------------------------------
-            # Preserve semantic node identity.
+            # Create runtime workflow ID.
             # --------------------------------------------------
 
             workflow_node_id = str(
@@ -421,8 +462,7 @@ class WorkflowGenerator:
             ] = workflow_node_id
 
             # --------------------------------------------------
-            # Function details are metadata attached to the
-            # semantic node.
+            # Attach function metadata.
             # --------------------------------------------------
 
             function_details = (
@@ -432,18 +472,7 @@ class WorkflowGenerator:
                 )
             )
 
-            # --------------------------------------------------
-            # Node inputs/outputs:
-            #
-            # If a function exists, its signature can describe
-            # the executable implementation.
-            #
-            # If it does not exist, we DO NOT invent inputs or
-            # outputs from another function.
-            # --------------------------------------------------
-
             node_inputs = []
-
             node_outputs = []
 
             if function_details.found:
@@ -457,21 +486,37 @@ class WorkflowGenerator:
                 )
 
             # --------------------------------------------------
-            # Construct workflow node.
+            # Condition.
             #
-            # IMPORTANT:
-            #
-            # Name = semantic/domain concept
-            #
-            # NOT:
-            #
-            # Name = function name
+            # Stage 9 may provide condition metadata either
+            # directly on the node or through conditional edges.
+            # --------------------------------------------------
+
+            condition = (
+                node_data.get(
+                    "condition"
+                )
+                or ""
+            )
+
+            is_conditional = bool(
+                node_data.get(
+                    "is_conditional",
+                    False,
+                )
+                or condition
+            )
+
+            # --------------------------------------------------
+            # Workflow node.
             # --------------------------------------------------
 
             workflow_node = {
 
                 "Id": workflow_node_id,
 
+                # IMPORTANT:
+                # semantic name, NOT function name.
                 "Name": semantic_name,
 
                 "Type": "CustomNode",
@@ -479,7 +524,10 @@ class WorkflowGenerator:
                 "Description": (
                     node_data.get(
                         "description",
-                        "",
+                        node_data.get(
+                            "Description",
+                            "",
+                        ),
                     )
                 ),
 
@@ -487,23 +535,21 @@ class WorkflowGenerator:
 
                 "Outputs": node_outputs,
 
-                "Inferred": node_data.get(
-                    "inferred",
-                    False,
+                "Inferred": bool(
+                    node_data.get(
+                        "inferred",
+                        False,
+                    )
                 ),
 
                 "FunctionDetails": (
                     function_details.to_dict()
                 ),
 
-                "Condition": node_data.get(
-                    "condition",
-                    "",
-                ),
+                "Condition": condition,
 
-                "IsConditional": node_data.get(
-                    "is_conditional",
-                    False,
+                "IsConditional": (
+                    is_conditional
                 ),
             }
 
@@ -520,24 +566,28 @@ class WorkflowGenerator:
 
         if execution_order:
 
-            first = (
-                execution_order[0]
-            )
+            for node_id in execution_order:
 
-            if (
-                first
-                in workflow_node_lookup
-            ):
+                if node_id in (
+                    workflow_node_lookup
+                ):
 
-                workflow[
-                    "StartNodeId"
-                ] = workflow_node_lookup[
-                    first
-                ]
+                    workflow[
+                        "StartNodeId"
+                    ] = workflow_node_lookup[
+                        node_id
+                    ]
 
-        elif workflow[
-            "Nodes"
-        ]:
+                    break
+
+        if (
+            workflow[
+                "StartNodeId"
+            ] is None
+            and workflow[
+                "Nodes"
+            ]
+        ):
 
             workflow[
                 "StartNodeId"
@@ -550,97 +600,329 @@ class WorkflowGenerator:
         # Connections
         # ======================================================
 
-            # ======================================================
-            # STAGE 11
-            # Execution Connections
-            # ======================================================
+        edges = self._get_edges(
+            graph
+        )
 
-            edges = self._get_edges(graph)
+        # ------------------------------------------------------
+        # We process explicit prompt relationships first.
+        #
+        # This ensures domain relationships cannot override
+        # semantic prompt ordering.
+        # ------------------------------------------------------
 
-            for source, target, edge_data in edges:
+        prompt_edges = []
 
-                if source not in workflow_node_lookup:
-                    continue
+        inferred_edges = []
 
-                if target not in workflow_node_lookup:
-                    continue
+        for source, target, edge_data in edges:
 
-                source_id = workflow_node_lookup[source]
-                target_id = workflow_node_lookup[target]
+            if (
+                source not in workflow_node_lookup
+                or target not in workflow_node_lookup
+            ):
+                continue
 
-                workflow["Connections"].setdefault(
-                    source_id,
-                    {}
+            relation = edge_data.get(
+                "relation"
+            )
+
+            if relation == COMPOSITE_RELATIONSHIP:
+                continue
+
+            if relation in {
+                PROMPT_DEPENDENCY,
+                PROMPT_CONDITION,
+            }:
+
+                prompt_edges.append(
+                    (
+                        source,
+                        target,
+                        edge_data,
+                    )
                 )
 
-                # Domain relationships such as OPERATION_INCLUDES
-                # describe semantic structure, not workflow transitions.
-                #
-                # At this stage the graph has already been planned,
-                # so an edge between executable operations means:
-                #
-                #     source --success--> target
-                #
-                workflow["Connections"][source_id]["success"] = target_id
+            elif relation in (
+                INFERRED_OPERATION_RELATIONSHIPS
+            ):
 
-            # There is no alternate user action in the minimal if form, so a
-            # false predicate must terminate rather than fall through.
-                if transition == "success":
-                    workflow["Connections"][source_id].setdefault("failure", "Done")
+                inferred_edges.append(
+                    (
+                        source,
+                        target,
+                        edge_data,
+                    )
+                )
+
+        # ------------------------------------------------------
+        # First add sequential prompt dependencies.
+        # ------------------------------------------------------
+
+        for source, target, edge_data in (
+            prompt_edges
+        ):
+
+            if edge_data.get(
+                "relation"
+            ) != PROMPT_DEPENDENCY:
+                continue
+
+            source_id = (
+                workflow_node_lookup[
+                    source
+                ]
+            )
+
+            target_id = (
+                workflow_node_lookup[
+                    target
+                ]
+            )
+
+            self._add_connection(
+                workflow[
+                    "Connections"
+                ],
+                source_id,
+                "success",
+                target_id,
+            )
+
+        # ------------------------------------------------------
+        # Add conditional prompt transitions.
+        #
+        # Important:
+        #
+        # A condition may appear on several semantic actions:
+        #
+        #     check balance -> reject
+        #     check balance -> record
+        #     check balance -> notify
+        #
+        # These do NOT mean that "check balance" has three
+        # executable success transitions.
+        #
+        # The actual execution chain is:
+        #
+        #     check -> reject -> record -> notify
+        #
+        # Therefore only the FIRST conditional target from a
+        # source is used as its branch transition.
+        # ------------------------------------------------------
+
+        conditional_by_source = {}
+
+        for source, target, edge_data in (
+            prompt_edges
+        ):
+
+            if edge_data.get(
+                "relation"
+            ) != PROMPT_CONDITION:
+                continue
+
+            conditional_by_source.setdefault(
+                source,
+                [],
+            ).append(
+                (
+                    target,
+                    edge_data,
+                )
+            )
+
+        for source, candidates in (
+            conditional_by_source.items()
+        ):
+
+            if source not in workflow_node_lookup:
+                continue
+
+            # --------------------------------------------------
+            # Prefer the target appearing earliest in semantic
+            # execution order.
+            # --------------------------------------------------
+
+            target, edge_data = (
+                self._first_conditional_target(
+                    candidates,
+                    execution_order,
+                )
+            )
+
+            if target is None:
+                continue
+
+            if target not in workflow_node_lookup:
+                continue
+
+            source_id = (
+                workflow_node_lookup[
+                    source
+                ]
+            )
+
+            target_id = (
+                workflow_node_lookup[
+                    target
+                ]
+            )
+
+            # --------------------------------------------------
+            # The condition is represented on the target node.
+            # The connection itself represents the true/success
+            # branch.
+            # --------------------------------------------------
+
+            self._add_connection(
+                workflow[
+                    "Connections"
+                ],
+                source_id,
+                "success",
+                target_id,
+            )
+
+            # --------------------------------------------------
+            # False condition terminates the minimal workflow.
+            # --------------------------------------------------
+
+            self._add_connection(
+                workflow[
+                    "Connections"
+                ],
+                source_id,
+                "failure",
+                "Done",
+            )
+
+            # --------------------------------------------------
+            # Ensure target contains the condition metadata.
+            # --------------------------------------------------
+
+            self._set_workflow_node_condition(
+                workflow,
+                target_id,
+                edge_data,
+            )
+
+        # ------------------------------------------------------
+        # Add inferred domain relationships only when there is
+        # no explicit prompt transition for the same pair.
+        # ------------------------------------------------------
+
+        for source, target, edge_data in (
+            inferred_edges
+        ):
+
+            source_id = (
+                workflow_node_lookup[
+                    source
+                ]
+            )
+
+            target_id = (
+                workflow_node_lookup[
+                    target
+                ]
+            )
+
+            relation = edge_data.get(
+                "relation"
+            )
+
+            if relation == COMPOSITE_RELATIONSHIP:
+                continue
+
+            # --------------------------------------------------
+            # Explicit prompt edge wins.
+            # --------------------------------------------------
+
+            if self._has_graph_pair_edge(
+                graph,
+                source,
+                target,
+            ):
+
+                if self._pair_has_prompt_relation(
+                    prompt_edges,
+                    source,
+                    target,
+                ):
+
+                    continue
+
+            # --------------------------------------------------
+            # Do not overwrite a condition transition.
+            # --------------------------------------------------
+
+            existing = workflow[
+                "Connections"
+            ].get(
+                source_id,
+                {}
+            )
+
+            if existing.get(
+                "success"
+            ) not in (
+                None,
+                "Done",
+            ):
+
+                continue
+
+            self._add_connection(
+                workflow[
+                    "Connections"
+                ],
+                source_id,
+                "success",
+                target_id,
+            )
 
         # ======================================================
         # Sequential fallback
         # ======================================================
         #
-        # Only used when the planner supplied no usable edges.
-        #
-        # We do NOT create semantic/function substitutions here.
+        # Only when the graph supplied no usable transitions.
         # ======================================================
 
-        if (
-            not workflow[
-                "Connections"
-            ]
-            and len(
-                workflow[
-                    "Nodes"
-                ]
-            ) > 1
+        if not self._has_executable_connections(
+            workflow
         ):
+
+            workflow_nodes = workflow[
+                "Nodes"
+            ]
 
             for index in range(
                 len(
-                    workflow[
-                        "Nodes"
-                    ]
-                )
-                - 1
+                    workflow_nodes
+                ) - 1
             ):
 
                 source_id = (
-                    workflow[
-                        "Nodes"
-                    ][index]["Id"]
+                    workflow_nodes[
+                        index
+                    ]["Id"]
                 )
 
                 target_id = (
+                    workflow_nodes[
+                        index + 1
+                    ]["Id"]
+                )
+
+                self._add_connection(
                     workflow[
-                        "Nodes"
-                    ][index + 1]["Id"]
-                )
-
-                workflow[
-                    "Connections"
-                ].setdefault(
+                        "Connections"
+                    ],
                     source_id,
-                    {},
+                    "success",
+                    target_id,
                 )
-
-                workflow[
-                    "Connections"
-                ][source_id][
-                    "success"
-                ] = target_id
 
         # ======================================================
         # Terminal nodes
@@ -654,27 +936,30 @@ class WorkflowGenerator:
                 "Id"
             ]
 
-            if (
-                node_id
-                not in workflow[
-                    "Connections"
-                ]
+            connections = workflow[
+                "Connections"
+            ].setdefault(
+                node_id,
+                {},
+            )
+
+            if not connections:
+
+                connections[
+                    "success"
+                ] = "Done"
+
+            elif (
+                "success" not in connections
+                and "failure" not in connections
             ):
 
-                workflow[
-                    "Connections"
-                ][node_id] = {
-                    "success": "Done"
-                }
+                connections[
+                    "success"
+                ] = "Done"
 
         # ======================================================
         # Workflow inputs
-        # ======================================================
-        #
-        # Only collect inputs from functions that actually exist.
-        #
-        # An unmatched semantic node must not cause an unrelated
-        # function's inputs to appear in the workflow.
         # ======================================================
 
         inputs = []
@@ -718,6 +1003,178 @@ class WorkflowGenerator:
         ] = inputs
 
         return workflow
+
+    # ==========================================================
+    # Conditional target ordering
+    # ==========================================================
+
+    @staticmethod
+    def _first_conditional_target(
+        candidates,
+        execution_order,
+    ):
+        """
+        Select the earliest conditional target according to the
+        semantic execution order.
+        """
+
+        position = {
+            node_id: index
+            for index, node_id
+            in enumerate(
+                execution_order
+            )
+        }
+
+        candidates = sorted(
+            candidates,
+            key=lambda pair: position.get(
+                pair[0],
+                float("inf"),
+            ),
+        )
+
+        if not candidates:
+            return (
+                None,
+                {},
+            )
+
+        return candidates[0]
+
+    # ==========================================================
+    # Connection helpers
+    # ==========================================================
+
+    @staticmethod
+    def _add_connection(
+        connections,
+        source_id,
+        transition,
+        target_id,
+    ):
+        """
+        Add a transition without accidentally replacing a
+        previously established explicit transition.
+
+        Explicit prompt transitions have priority.
+        """
+
+        source_connections = (
+            connections.setdefault(
+                source_id,
+                {},
+            )
+        )
+
+        if transition not in (
+            source_connections
+        ):
+
+            source_connections[
+                transition
+            ] = target_id
+
+    @staticmethod
+    def _has_executable_connections(
+        workflow,
+    ):
+        """
+        Return True if at least one actual workflow transition
+        exists.
+        """
+
+        for transitions in workflow.get(
+            "Connections",
+            {},
+        ).values():
+
+            for transition, target in (
+                transitions.items()
+            ):
+
+                if target != "Done":
+
+                    return True
+
+        return False
+
+    @staticmethod
+    def _has_graph_pair_edge(
+        graph,
+        source,
+        target,
+    ):
+
+        if hasattr(
+            graph,
+            "has_edge",
+        ):
+
+            return graph.has_edge(
+                source,
+                target,
+            )
+
+        return False
+
+    @staticmethod
+    def _pair_has_prompt_relation(
+        prompt_edges,
+        source,
+        target,
+    ):
+
+        for edge_source, edge_target, edge_data in (
+            prompt_edges
+        ):
+
+            if (
+                edge_source == source
+                and edge_target == target
+            ):
+
+                return True
+
+        return False
+
+    # ==========================================================
+    # Condition metadata
+    # ==========================================================
+
+    @staticmethod
+    def _set_workflow_node_condition(
+        workflow,
+        workflow_node_id,
+        edge_data,
+    ):
+
+        condition = edge_data.get(
+            "condition",
+            "",
+        )
+
+        if not condition:
+            return
+
+        for node in workflow[
+            "Nodes"
+        ]:
+
+            if node.get(
+                "Id"
+            ) != workflow_node_id:
+                continue
+
+            node[
+                "Condition"
+            ] = condition
+
+            node[
+                "IsConditional"
+            ] = True
+
+            return
 
     # ==========================================================
     # Pretty Print
@@ -826,13 +1283,13 @@ class WorkflowGenerator:
             )
 
             for (
-                key,
+                transition,
                 target,
             ) in transitions.items():
 
                 print(
                     "   ",
-                    key,
+                    transition,
                     "->",
                     target,
                 )

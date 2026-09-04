@@ -307,6 +307,23 @@ class SemanticStep:
     condition: str = ""
     domain_candidates: List[Any] = field(default_factory=list)
 
+    # Phase 1 semantic enrichment
+    action: str = ""
+    object: str = ""
+    negated: bool = False
+
+    # Phase 3
+    entities: List[Any] = field(default_factory=list)
+    parameters: List[Any] = field(default_factory=list)
+
+    # Phase 4
+    resolved_text: str = ""
+    references: Dict[str, str] = field(default_factory=dict)
+
+    # Phase 5
+    branch: str = ""
+    condition_negated: bool = False
+
 
 @dataclass
 class SemanticInterpretation:

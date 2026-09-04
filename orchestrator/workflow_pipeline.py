@@ -25,7 +25,7 @@ from engine.parsers.hybrid_semantic_parser import HybridSemanticParser
 from engine.parsers.semantic_parser import SimpleSemanticParser
 from engine.subgraph_builder.prompt_subgrapgh_builder import PromptSubGraphBuilder
 from engine.workflow_generator.workflow_generator import WorkflowGenerator
-from engine.workflow_graph_builder.WorkflowGraphBuilder import WorkflowGraphBuilder
+from engine.workflow_graph_builder.workflow_graph_builder import WorkflowGraphBuilder
 from engine.workflow_selector.beam_search_workflow_selector import (
     BeamSearchWorkflowSelector,
 )
@@ -206,8 +206,10 @@ class WorkflowPipeline:
                     prompt,
                     workflow_name=workflow_name,
                 )
-            except Exception as error:
-                output_fn(f"Workflow generation failed: {error}")
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                output_fn("Workflow generation failed. See traceback above.")
                 continue
 
             output_fn(

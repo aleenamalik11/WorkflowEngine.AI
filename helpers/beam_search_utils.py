@@ -140,17 +140,70 @@ def _is_executable_node_type(
         EXECUTABLE_NODE_TYPES
     )
 
-def _is_contextual_operation_path(graph, path):
-    for node_id in path:
-        if not _is_executable_node_type(
-                graph.nodes[node_id].get("node_type")
-        ):
-            return False
+def _is_contextual_operation_path(
+    self,
+    graph,
+    path,
+):
+    """
+    A contextual path may contain non-executable domain nodes.
 
-    for source, target in zip(path, path[1:]):
-        if graph.edges[source, target].get(
-                "relation"
-        ) not in INFERRED_OPERATION_RELATIONSHIPS:
+    Non-executable nodes are allowed as contextual intermediates
+    used to establish a relationship between executable operations.
+
+    Example:
+
+        Operation A
+            |
+            v
+          Event
+            |
+            v
+        Operation B
+
+    is a valid contextual path.
+
+    However, every edge in the path must represent a relationship
+    that is allowed for contextual operation inference.
+    """
+
+    if not path or len(path) < 2:
+        return False
+
+    # ---------------------------------------------------------
+    # Path must begin and end with executable operations.
+    # ---------------------------------------------------------
+
+    if not self._is_executable_node(
+        graph.nodes[path[0]]
+    ):
+        return False
+
+    if not self._is_executable_node(
+        graph.nodes[path[-1]]
+    ):
+        return False
+
+    # ---------------------------------------------------------
+    # Every relationship used to connect the path must be a
+    # recognized operation relationship.
+    # ---------------------------------------------------------
+
+    for source, target in zip(
+        path,
+        path[1:],
+    ):
+
+        relation = (
+            graph.edges[
+                source,
+                target,
+            ].get("relation")
+        )
+
+        if not self._is_execution_relationship(
+            relation
+        ):
             return False
 
     return True

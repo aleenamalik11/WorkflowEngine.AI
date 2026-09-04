@@ -1,4 +1,5 @@
 import networkx as nx
+import re
 
 from helpers.similarity_utils import (
     _cosine_similarity,
@@ -9,6 +10,8 @@ from helpers.similarity_utils import (
 )
 from helpers.utils import _add_domain_node
 from models import SemanticInterpretation
+
+
 
 
 COMPOSITE_RELATIONSHIP = "OPERATION_INCLUDES"
@@ -50,7 +53,7 @@ class PromptSubGraphBuilder:
             )
 
             # -------------------------------------------------
-            # Retrieve a larger candidate set before truncation.
+            # Retrieve candidates for THIS semantic step only.
             # -------------------------------------------------
 
             candidates = (
@@ -105,14 +108,18 @@ class PromptSubGraphBuilder:
                     "score": score,
                     "lexical_score": lexical_similarity,
                     "semantic_score": semantic_similarity,
-                    "explicit": bool(
-                        step.explicit
-                    ),
-                    "inferred": not bool(
-                        step.explicit
-                    ),
+                    "explicit": bool(step.explicit),
+                    "inferred": not bool(step.explicit),
                     "source": "direct",
                     "prompt_text": step.text,
+
+                    # -------------------------------------------------
+                    # IMPORTANT:
+                    # Preserve the semantic step identity.
+                    # Later stages must never guess the step by
+                    # embedding the dependency text again.
+                    # -------------------------------------------------
+                    "step_index": step_index,
                 }
 
                 self._add_candidate(
@@ -139,6 +146,7 @@ class PromptSubGraphBuilder:
                 step_embedding,
                 step_candidates,
                 neighborhood_depth,
+                step_index=step_index,
             )
 
             step_candidates.extend(
@@ -146,7 +154,7 @@ class PromptSubGraphBuilder:
             )
 
             # -------------------------------------------------
-            # Deduplicate.
+            # Deduplicate candidates belonging to THIS step.
             # -------------------------------------------------
 
             step_candidates = (
@@ -185,9 +193,15 @@ class PromptSubGraphBuilder:
             candidate_map[
                 step_index
             ] = {
+                "step_index": step_index,
+                "step_text": step.text,
                 "step_embedding": step_embedding,
                 "candidates": step_candidates,
             }
+
+        # -----------------------------------------------------
+        # Add prompt dependencies using semantic step indexes.
+        # -----------------------------------------------------
 
         prompt_domain_subgraph = (
             self.set_execution_order(
@@ -230,6 +244,8 @@ class PromptSubGraphBuilder:
             candidates.append(item)
             return
 
+        # Keep the strongest candidate while preserving
+        # the semantic step identity.
         if (
             item["score"]
             > existing["score"]
@@ -279,6 +295,7 @@ class PromptSubGraphBuilder:
         step_embedding,
         step_candidates,
         neighborhood_depth,
+        step_index=None,
     ):
 
         neighborhood_seed_ids = [
@@ -345,6 +362,7 @@ class PromptSubGraphBuilder:
                         source,
                         target,
                         relationship,
+                        step_index=step_index,
                     )
                 )
 
@@ -365,6 +383,7 @@ class PromptSubGraphBuilder:
         source,
         target,
         relationship,
+        step_index=None,
     ):
 
         inferred_candidates = []
@@ -441,6 +460,9 @@ class PromptSubGraphBuilder:
                     "source": "neighborhood",
                     "prompt_text": step.text,
                     "relation_score": relation_score,
+
+                    # Preserve the originating semantic step.
+                    "step_index": step_index,
                 }
             )
 
@@ -456,16 +478,43 @@ class PromptSubGraphBuilder:
         prompt_subgraph,
         candidate_map,
     ):
+        """
+        Convert semantic prompt dependencies into graph
+        relationships.
+
+        IMPORTANT:
+
+        The old implementation attempted to identify the
+        `before` and `after` steps by embedding their text and
+        finding the most similar semantic step.
+
+        That is unsafe.
+
+        Example:
+
+            "reject the transaction"
+            "record the failed transaction"
+            "notify the customer"
+
+        can all have similar embeddings. The dependency
+        resolver could therefore accidentally map multiple
+        prompt steps to the same domain operation.
+
+        This implementation first resolves the dependency
+        against the actual SemanticStep text/index and then
+        selects the best candidate ONLY from that step's
+        candidate list.
+        """
 
         for dependency in (
             interpretation.dependencies
         ):
 
-            before = dependency.get(
+            before_text = dependency.get(
                 "before"
             )
 
-            after = dependency.get(
+            after_text = dependency.get(
                 "after"
             )
 
@@ -474,32 +523,49 @@ class PromptSubGraphBuilder:
                 "PROMPT_DEPENDENCY",
             )
 
-            if not before or not after:
+            if (
+                not before_text
+                or not after_text
+            ):
                 continue
 
-            before_embedding = (
-                self._embedding_service.encode(
-                    before
+            before_index = (
+                self._find_step_index(
+                    interpretation,
+                    before_text,
                 )
             )
 
-            after_embedding = (
-                self._embedding_service.encode(
-                    after
+            after_index = (
+                self._find_step_index(
+                    interpretation,
+                    after_text,
                 )
             )
+
+            if (
+                before_index is None
+                or after_index is None
+            ):
+                continue
+
+            # -------------------------------------------------
+            # IMPORTANT:
+            # Resolve each side ONLY against candidates
+            # belonging to that semantic step.
+            # -------------------------------------------------
 
             before_node = (
-                self.best_candidate_for_embedding(
+                self._best_candidate_for_step(
                     candidate_map,
-                    before_embedding,
+                    before_index,
                 )
             )
 
             after_node = (
-                self.best_candidate_for_embedding(
+                self._best_candidate_for_step(
                     candidate_map,
-                    after_embedding,
+                    after_index,
                 )
             )
 
@@ -512,12 +578,29 @@ class PromptSubGraphBuilder:
             if before_node == after_node:
                 continue
 
+            # -------------------------------------------------
+            # Conditional dependency
+            # -------------------------------------------------
+
             if relation == "PROMPT_CONDITION":
 
                 condition = dependency.get(
                     "condition",
                     "",
                 )
+
+                branch = dependency.get(
+                    "branch",
+                    "then",
+                )
+
+                # Mark the semantic candidate nodes with
+                # explicit prompt-condition metadata.
+                #
+                # This is intentionally metadata at this stage.
+                # Stage 10/11 is responsible for translating
+                # this into the actual WorkflowModel condition
+                # structure.
 
                 if prompt_subgraph.has_node(
                     after_node
@@ -532,8 +615,32 @@ class PromptSubGraphBuilder:
                     prompt_subgraph.nodes[
                         after_node
                     ][
+                        "branch"
+                    ] = branch
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
                         "is_conditional"
                     ] = True
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
+                        "condition_source"
+                    ] = before_node
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
+                        "condition_source_step_index"
+                    ] = before_index
+
+                    prompt_subgraph.nodes[
+                        after_node
+                    ][
+                        "conditional_step_index"
+                    ] = after_index
 
                 if prompt_subgraph.has_node(
                     before_node
@@ -545,13 +652,57 @@ class PromptSubGraphBuilder:
                         "is_condition_check"
                     ] = True
 
+                    # Keep all conditional targets rather
+                    # than overwriting the previous target.
+                    existing_targets = (
+                        prompt_subgraph.nodes[
+                            before_node
+                        ].get(
+                            "condition_targets",
+                            [],
+                        )
+                    )
+
+                    if after_node not in existing_targets:
+                        existing_targets.append(
+                            after_node
+                        )
+
                     prompt_subgraph.nodes[
                         before_node
                     ][
-                        "condition_for"
-                    ] = after_node
+                        "condition_targets"
+                    ] = existing_targets
+
+                    prompt_subgraph.nodes[
+                        before_node
+                    ][
+                        "condition"
+                    ] = condition
+
+                # -------------------------------------------------
+                # Add an explicit prompt edge as well.
+                #
+                # This preserves the dependency for Stage 9
+                # ordering and allows Stage 10/11 to construct
+                # the actual branch.
+                # -------------------------------------------------
+
+                prompt_subgraph.add_edge(
+                    before_node,
+                    after_node,
+                    relation="PROMPT_CONDITION",
+                    condition=condition,
+                    branch=branch,
+                    inferred_context=False,
+                    origin="prompt",
+                )
 
                 continue
+
+            # -------------------------------------------------
+            # Normal sequential dependency
+            # -------------------------------------------------
 
             prompt_subgraph.add_edge(
                 before_node,
@@ -564,7 +715,133 @@ class PromptSubGraphBuilder:
         return prompt_subgraph
 
     # =========================================================
-    # Dependency candidate
+    # Semantic step resolution
+    # =========================================================
+
+    def _find_step_index(
+        self,
+        interpretation,
+        text,
+    ):
+        """
+        Find the exact SemanticStep represented by a
+        dependency endpoint.
+
+        Prefer normalized exact text over embeddings.
+
+        This is important because dependency endpoints already
+        originate from the semantic parser.
+        """
+
+        normalized_target = self._normalize_text(
+            text
+        )
+
+        if not normalized_target:
+            return None
+
+        # -----------------------------------------------------
+        # First: exact normalized match.
+        # -----------------------------------------------------
+
+        for index, step in enumerate(
+            interpretation.steps
+        ):
+
+            if (
+                self._normalize_text(
+                    step.text
+                )
+                == normalized_target
+            ):
+                return index
+
+        # -----------------------------------------------------
+        # Second: normalized containment.
+        #
+        # Useful if one stage cleaned punctuation differently
+        # from another stage.
+        # -----------------------------------------------------
+
+        for index, step in enumerate(
+            interpretation.steps
+        ):
+
+            normalized_step = (
+                self._normalize_text(
+                    step.text
+                )
+            )
+
+            if not normalized_step:
+                continue
+
+            if (
+                normalized_target
+                in normalized_step
+                or normalized_step
+                in normalized_target
+            ):
+                return index
+
+        return None
+
+    def _best_candidate_for_step(
+        self,
+        candidate_map,
+        step_index,
+    ):
+        """
+        Select the best candidate belonging to one specific
+        semantic step.
+
+        Never compare candidates belonging to other prompt
+        steps here.
+        """
+
+        entry = candidate_map.get(
+            step_index
+        )
+
+        if not entry:
+            return None
+
+        candidates = entry.get(
+            "candidates",
+            [],
+        )
+
+        if not candidates:
+            return None
+
+        # Prefer direct candidates over inferred neighborhood
+        # candidates, then use the candidate score.
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.get(
+                    "lexical_score",
+                    0.0,
+                ) >= 0.90,
+
+                candidate.get(
+                    "source"
+                ) == "direct",
+
+                candidate.get(
+                    "score",
+                    0.0,
+                ),
+            ),
+            reverse=True,
+        )
+
+        return ranked[0].get(
+            "node_id"
+        )
+
+    # =========================================================
+    # Backward-compatible helper
     # =========================================================
 
     def best_candidate_for_embedding(
@@ -572,6 +849,20 @@ class PromptSubGraphBuilder:
         candidate_map,
         dependency_embedding,
     ):
+        """
+        Backward-compatible helper.
+
+        This method is intentionally retained because older
+        pipeline code may still call it.
+
+        New dependency processing MUST NOT use it because an
+        embedding cannot reliably identify which semantic step
+        a dependency endpoint belongs to.
+
+        If called by older code, it performs the old broad
+        lookup behavior, but set_execution_order() no longer
+        depends on it.
+        """
 
         best_entry = None
         best_similarity = float(
@@ -598,9 +889,10 @@ class PromptSubGraphBuilder:
         if best_entry is None:
             return None
 
-        candidates = best_entry[
-            "candidates"
-        ]
+        candidates = best_entry.get(
+            "candidates",
+            [],
+        )
 
         if not candidates:
             return None
@@ -620,3 +912,30 @@ class PromptSubGraphBuilder:
         return best_candidate.get(
             "node_id"
         )
+
+    # =========================================================
+    # Text normalization
+    # =========================================================
+
+    @staticmethod
+    def _normalize_text(
+        text,
+    ):
+        if text is None:
+            return ""
+
+        text = str(text).lower()
+
+        text = re.sub(
+            r"[^a-z0-9\s]+",
+            " ",
+            text,
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        return text.strip()
