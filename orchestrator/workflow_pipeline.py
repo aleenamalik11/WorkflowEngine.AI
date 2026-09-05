@@ -81,7 +81,7 @@ class WorkflowPipeline:
         self.beam_selector = beam_selector or BeamSearchWorkflowSelector(
             beam_width=beam_width
         )
-        self.graph_builder = graph_builder or WorkflowGraphBuilder()
+        self.graph_builder = graph_builder or WorkflowGraphBuilder(domain_graph_service)
         self.generator = generator or WorkflowGenerator(function_matcher)
 
     def run(
